@@ -770,6 +770,7 @@ def main():
     max_per_grp = int(cfg.get("MAX_PER_GROUP", "1") or "0")        # ไม้/กลุ่ม ดีฟอลต์ (จ-ศ · 0=ไม่จำกัด)
     max_per_grp_us = int(cfg.get("MAX_PER_GROUP_US", "2") or "0")  # กลุ่ม "หุ้น/ดัชนี US" เปิดได้กี่ไม้ (US มีหลายตัว)
     digest_hour = int(cfg.get("DIGEST_HOUR", "8"))                # ชั่วโมงส่งสรุปประจำวัน
+    heartbeat_sec = int(float(cfg.get("HEARTBEAT_MIN", "0")) * 60)  # แจ้งสถานะทุก N นาที (0=ปิด)
     _state = _load_state()
     peak_eq = float(_state.get("peak_eq", 0) or 0)
     accept = {x.strip() for x in cfg.get("GEMINI_ACCEPT", "enter,small").split(",") if x.strip()}
@@ -807,6 +808,9 @@ def main():
     disconnected = False
     prev_open = 0          # นับไม้เปิด รอบก่อน — ถ้าลดลง = มีไม้ปิด → สแกนหาตัวใหม่ทันที
     last_scan_key = None   # กันส่งสรุปสแกนซ้ำ (ถ้าผลเหมือนเดิม)
+    _exc_streak = 0        # นับ loop error ซ้ำต่อเนื่อง — alert Telegram เมื่อซ้ำมาก
+    _in_blackout = False   # สถานะ blackout ปัจจุบัน — แจ้ง Telegram แค่ครั้งแรกที่เข้า/ออก
+    last_heartbeat = 0.0   # timestamp ส่ง heartbeat ล่าสุด
 
     while True:
         try:
@@ -993,17 +997,24 @@ def main():
             open_n = _count_open() if auto_on else 0
             if auto_on and open_n < prev_open:        # มีไม้เพิ่งปิด (TP/SL) → สแกนหาตัวใหม่ทันที
                 last_scan = 0.0
-                log.info("มีไม้ปิด เหลือ %d ไม้ → สแกนหาตัวใหม่ทันที (ไม่รอครบรอบ)", open_n)
+                queue.clear()   # ล้าง queue เก่า — สัญญาณอาจ stale หลังจากไม้ปิด
+                log.info("มีไม้ปิด เหลือ %d ไม้ → สแกนใหม่ทันที (queue ล้างแล้ว)", open_n)
             prev_open = open_n
             blocked = daily_halt or _is_paused()
             slot_free = (open_n < max_pos) if auto_on else (pending is None)
             if slot_free and not blocked:
                 blackout, ev = news_guard.is_blackout(finnhub, blackout_min)
                 if blackout:
-                    if now - last_scan > scan_gap:   # log เป็นระยะ ไม่สแกนช่วงข่าว
+                    if not _in_blackout:            # แจ้ง Telegram แค่ครั้งแรกที่เข้าช่วงข่าว
+                        tg.send_text(token, chat, f"⏸️ งดเปิดไม้ชั่วคราว — ใกล้ข่าวแรง: {ev}")
+                        _in_blackout = True
+                    if now - last_scan > scan_gap:
                         log.info("งดเปิดไม้ — ใกล้ข่าวแรง: %s", ev)
                         last_scan = now
                 else:
+                    if _in_blackout:                # ออกจาก blackout — แจ้งกลับมาสแกนปกติ
+                        tg.send_text(token, chat, "✅ พ้นช่วงข่าวแรงแล้ว — กลับมาสแกนปกติ")
+                        _in_blackout = False
                     if not queue and now - last_scan > scan_gap:
                         syms = set(m.list_symbols())
                         queue = []
@@ -1087,7 +1098,9 @@ def main():
                             key = bias["symbol"] + bias["direction"]
                             if now - recent.get(key, 0) < cooldown:
                                 continue
-                            t = tk.build_ticket(bias["symbol"], bias, acc_now, cfg, m, part1_hint=hint)
+                            # ส่ง scalp= เพื่อให้ build_ticket ใช้ SL/RR ของกลยุทธ์ (เหมือน auto mode)
+                            t = tk.build_ticket(bias["symbol"], bias, acc_now, cfg, m, part1_hint=hint,
+                                                scalp=bias.get("scalp"))
                             if not t or t.get("skipped") or t["verdict"].get("decision") not in accept:
                                 continue
                             tid = f"t{counter}"; counter += 1
@@ -1097,11 +1110,33 @@ def main():
                                 pending = {"tid": tid, "msg_id": mid, "ticket": t, "sent_at": now}
                                 recent[key] = now
                                 log.info("เสนอใบสั่ง %s %s", t["exsym"], t["direction"])
+            # 4) Heartbeat — แจ้งสถานะทุก N นาที (กัน user คิดว่าบอทหยุดทำงาน)
+            if heartbeat_sec > 0 and now - last_heartbeat >= heartbeat_sec:
+                _hb_n = _count_open()
+                if daily_halt:
+                    _hb_why = "🛑 หยุดวันนี้ (ขาดทุนถึงเพดาน)"
+                elif _is_paused():
+                    _hb_why = "⏸️ หยุดชั่วคราว — กด /resume เพื่อเริ่ม"
+                elif auto_on and _hb_n >= max_pos:
+                    _hb_why = f"📊 ไม้เต็ม {_hb_n}/{max_pos} ไม้ — รอไม้ปิด"
+                else:
+                    _hb_why = f"🔍 สแกนต่อเนื่อง · ไม้เปิด {_hb_n}/{max_pos}"
+                tg.send_text(token, chat, f"💓 Part 2 ทำงาน · {_hb_why}")
+                last_heartbeat = now
+            _exc_streak = 0   # reset เมื่อรอบ loop สำเร็จ (ไม่มี exception)
             time.sleep(2)
         except KeyboardInterrupt:
             break
         except Exception as e:  # noqa: BLE001
+            _exc_streak += 1
             log.exception("loop error: %s", e)
+            if _exc_streak in (3, 10, 30):      # แจ้ง Telegram เมื่อ error วนซ้ำ (3×, 10×, 30×)
+                try:
+                    tg.send_text(token, chat,
+                                 f"⚠️ Part 2: loop error ซ้ำ {_exc_streak}× — {str(e)[:100]}\n"
+                                 "บอทยังรัน (retry อัตโนมัติ) ถ้าไม่กลับมาใน 5 นาที ให้ /restart")
+                except Exception:  # noqa: BLE001
+                    pass
             time.sleep(5)
     m.shutdown()
 
