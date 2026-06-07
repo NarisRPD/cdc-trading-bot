@@ -19,7 +19,8 @@ def load(path: str = "config.env") -> dict:
                 # ตัด inline comment เช่น  KEY=180  # หมายเหตุ  → เก็บแค่ 180
                 if " #" in v:
                     v = v[: v.index(" #")]
-                cfg[k.strip()] = v.strip()
+                if v.strip():                # ไม่เก็บ empty value — ให้ cfg.get() fallback ไป default ได้
+                    cfg[k.strip()] = v.strip()
     for k in list(cfg):           # env override (เผื่อ set ชั่วคราว)
         if os.getenv(k):
             cfg[k] = os.getenv(k)
