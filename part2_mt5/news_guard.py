@@ -42,6 +42,33 @@ def _fetch(api_key: str) -> list:
     return out
 
 
+def _is_crypto_thin_hours() -> "tuple[bool, str]":
+    """ช่วงวอลุ่มบางสำหรับ crypto (เสาร์เช้า UTC · อาทิตย์กลางคืน UTC)
+    ช่วงเหล่านี้ราคาเด้งง่าย SL โดนได้จาก noise ล้วนๆ — ไม่มี institutional flow"""
+    now = datetime.now(timezone.utc)
+    wd, h = now.weekday(), now.hour   # Mon=0 .. Sat=5, Sun=6
+    if wd == 5 and 0 <= h < 5:       # เสาร์ 00:00-05:00 UTC — บางมาก (ก่อน Asia open)
+        return True, f"crypto ตลาดบาง เสาร์ {h:02d}:00 UTC"
+    if wd == 6 and 21 <= h <= 23:    # อาทิตย์ 21:00-23:59 UTC — ก่อน London/NY ขึ้นมา
+        return True, f"crypto ตลาดบาง อาทิตย์ {h:02d}:00 UTC"
+    return False, ""
+
+
+def _is_crypto_options_expiry() -> "tuple[bool, str]":
+    """Options expiry crypto (Deribit/OKX) — ทุกศุกร์สุดท้ายของเดือน 08:00 UTC ±2ชม
+    ช่วงนี้ราคามักโดน pin ที่ strike price แล้วพุ่งหลังหมดอายุ — อย่าเข้าตอนนี้"""
+    import calendar as _cal
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 4:   # ไม่ใช่ศุกร์
+        return False, ""
+    _, last_day = _cal.monthrange(now.year, now.month)
+    last_fri = max(d for d in range(1, last_day + 1)
+                   if datetime(now.year, now.month, d, tzinfo=timezone.utc).weekday() == 4)
+    if now.day == last_fri and 6 <= now.hour <= 10:   # ±2ชม รอบ 08:00 UTC
+        return True, f"Crypto Options Expiry ศุกร์สุดท้าย {now.strftime('%d/%m')} ~08:00 UTC"
+    return False, ""
+
+
 def is_blackout(api_key: str, within_min: int = 30) -> "tuple[bool, str]":
     """คืน (True, ชื่อข่าว) ถ้ามีข่าวแรงภายใน within_min นาที · (False,'') ถ้าโล่ง"""
     if not api_key:
@@ -55,3 +82,20 @@ def is_blackout(api_key: str, within_min: int = 30) -> "tuple[bool, str]":
         if abs((dt - now).total_seconds()) <= win.total_seconds():
             return (True, label)
     return (False, "")
+
+
+def is_blackout_crypto(api_key: str, within_min: int = 30) -> "tuple[bool, str]":
+    """blackout สำหรับ crypto โดยเฉพาะ (3 ชั้น):
+      1) ข่าว US high-impact (FOMC/CPI/NFP — กระทบทุกสินทรัพย์รวม crypto)
+      2) ช่วงวอลุ่มบาง (เสาร์เช้า / อาทิตย์กลางคืน UTC) — noise สูง
+      3) Crypto options expiry (ศุกร์สุดท้ายของเดือน ~08:00 UTC) — ราคาถูก pin"""
+    blk, label = is_blackout(api_key, within_min)
+    if blk:
+        return blk, label
+    thin, reason = _is_crypto_thin_hours()
+    if thin:
+        return True, reason
+    exp, reason = _is_crypto_options_expiry()
+    if exp:
+        return True, reason
+    return False, ""

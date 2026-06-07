@@ -16,7 +16,34 @@ import execute
 
 log = logging.getLogger("part2.manage")
 _MAGIC = 260605
-_state: dict = {}   # ticket -> {"partial": bool, "risk": float}
+_state: dict = {}        # ticket -> {"partial": bool, "risk": float}
+_atr_cache: dict = {}    # sym → (atr_value, timestamp) — กันเรียก MT5 ซ้ำทุก loop
+
+
+def _current_atr(sym: str, n: int = 14) -> float:
+    """ATR ปัจจุบัน (M15, True Range) — adaptive trailing SL ตามความผันผวนจริง
+    cache 60 วิ ต่อ symbol เพื่อลด MT5 API call"""
+    import time as _t
+    now = _t.time()
+    cached = _atr_cache.get(sym)
+    if cached and now - cached[1] < 60:
+        return cached[0]
+    try:
+        import MetaTrader5 as m5
+        import numpy as np
+        rates = m5.copy_rates_from_pos(sym, m5.TIMEFRAME_M15, 0, n + 2)
+        if rates is None or len(rates) < 5:
+            return 0.0
+        h = np.array([r["high"] for r in rates], dtype=float)
+        l_arr = np.array([r["low"] for r in rates], dtype=float)
+        c = np.array([r["close"] for r in rates], dtype=float)
+        pc = np.roll(c, 1); pc[0] = c[0]
+        tr = np.maximum(h - l_arr, np.maximum(np.abs(h - pc), np.abs(l_arr - pc)))
+        atr = float(tr[-n:].mean())
+        _atr_cache[sym] = (atr, now)
+        return atr
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def _round_vol(vol: float, sym: str) -> float:
@@ -109,9 +136,11 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
             st["partial"] = True
             continue
 
-        # 3) trailing SL (เฉพาะ R-based · โหมด price-% TP ปล่อยไม้วิ่งถึงเป้า %)
+        # 3) trailing SL แบบ ATR-aware (เฉพาะ R-based · โหมด price-% TP ปล่อยไม้วิ่งถึงเป้า %)
+        # dist = max(R-based, ATR-based) → ถ้าตลาดผันผวนเพิ่ม SL จะถ่างกว้างขึ้นตาม (ไม่โดน noise)
         if tp_pct <= 0 and st["partial"]:
-            dist = R * tfac
+            atr_now = _current_atr(p.symbol)
+            dist = max(R * tfac, atr_now * tfac) if atr_now > 0 else R * tfac
             eps = cur * 1e-6
             if is_buy:
                 new_sl = cur - dist

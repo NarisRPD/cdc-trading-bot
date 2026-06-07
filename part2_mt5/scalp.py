@@ -23,9 +23,17 @@ def _ema(series: pd.Series, n: int) -> pd.Series:
 
 
 def _atr(df, n: int = 20) -> float:
-    """ATR แบบเรียบ (mean range) — ใช้เป็นกันชน SL/tolerance"""
-    rng = (df["high"].astype(float) - df["low"].astype(float))
-    return float(rng.iloc[-n:].mean()) if len(rng) >= 5 else float(rng.mean())
+    """ATR แบบ True Range (รวม gap ข้ามแท่ง) — แม่นกว่า high-low อย่างเดียว โดยเฉพาะ crypto
+    True Range = max(high-low, |high-prev_close|, |low-prev_close|)"""
+    h = df["high"].astype(float).values
+    l = df["low"].astype(float).values
+    c = df["close"].astype(float).values
+    if len(c) < 2:
+        return float(np.mean(h - l)) if len(h) >= 1 else 0.0
+    pc = np.roll(c, 1)
+    pc[0] = c[0]           # แท่งแรก: prev_close = close ตัวเอง (ไม่มี gap ก่อนหน้า)
+    tr = np.maximum(h - l, np.maximum(np.abs(h - pc), np.abs(l - pc)))
+    return float(tr[-n:].mean()) if len(tr) >= 5 else float(tr.mean())
 
 
 def stochastic(df, k_period: int = 14, k_smooth: int = 3, d_period: int = 3):
@@ -44,7 +52,8 @@ def stochastic(df, k_period: int = 14, k_smooth: int = 3, d_period: int = 3):
 
 
 def ema_ribbon_stoch(df, atr: Optional[float] = None,
-                     oversold: float = 20.0, overbought: float = 80.0) -> dict:
+                     oversold: float = 20.0, overbought: float = 80.0,
+                     sl_atr_mult: float = 0.6) -> dict:
     """#1 EMA Ribbon + Stochastic (ตามเทรนด์ ห้ามสวน)
       Buy : close > EMA50 > EMA200 (เทรนด์ขึ้นชัด) + เพิ่งย่อแตะ EMA50 + Stoch ตัดขึ้นจาก oversold
       Sell: close < EMA50 < EMA200 + เพิ่งเด้งแตะ EMA50 + Stoch ตัดลงจาก overbought
@@ -72,7 +81,7 @@ def ema_ribbon_stoch(df, atr: Optional[float] = None,
         from_oversold = min(k_1, k0) <= oversold             # %K เคยลงไปแดนขายมากเกิน
         cross_up = (k0 <= d0) and (k1 > d1)                  # แล้วตัด %D ขึ้น
         if near and from_oversold and cross_up:
-            sl = round(min(recent_low, e50) - atr * 0.3, 5)
+            sl = round(min(recent_low, e50) - atr * sl_atr_mult, 5)
             if sl < c:
                 return {"detected": True, "direction": "buy", "entry": round(c, 5), "sl": sl,
                         "reason": "EMA50>EMA200 + ย่อแตะ EMA50 + Stoch ตัดขึ้นจาก oversold"}
@@ -83,7 +92,7 @@ def ema_ribbon_stoch(df, atr: Optional[float] = None,
         from_overbought = max(k_1, k0) >= overbought
         cross_dn = (k0 >= d0) and (k1 < d1)
         if near and from_overbought and cross_dn:
-            sl = round(max(recent_high, e50) + atr * 0.3, 5)
+            sl = round(max(recent_high, e50) + atr * sl_atr_mult, 5)
             if sl > c:
                 return {"detected": True, "direction": "sell", "entry": round(c, 5), "sl": sl,
                         "reason": "EMA50<EMA200 + เด้งแตะ EMA50 + Stoch ตัดลงจาก overbought"}
@@ -203,7 +212,8 @@ def _bear_trigger(df) -> bool:
     return bool(engulf or pin)
 
 
-def hybrid_pro(df, rr: float = 2.5, rsi_lo: float = 40, rsi_hi: float = 60) -> dict:
+def hybrid_pro(df, rr: float = 2.5, rsi_lo: float = 40, rsi_hi: float = 60,
+               sl_atr_mult: float = 0.5) -> dict:
     """Hybrid-Pro (multi-TF ตามเทรนด์): H1 EMA50>EMA200 = เทรนด์ + M15 ย่อแตะ EMA20 +
       RSI 40-60 (โซนพักตัว) + แท่งกลับตัว (Engulfing/Pin) → เข้าตามเทรนด์
       SL = swing low/high ล่าสุด · TP = rr × ระยะ SL (ดีฟอลต์ 2.5)
@@ -230,13 +240,13 @@ def hybrid_pro(df, rr: float = 2.5, rsi_lo: float = 40, rsi_hi: float = 60) -> d
     up = he50 > he200 and hc > he50
     dn = he50 < he200 and hc < he50
     if up and lo <= e20 + 0.3 * atr and rsi_lo <= rsi <= rsi_hi and _bull_trigger(df):
-        sl = round(float(df["low"].iloc[-6:].min()) - 0.2 * atr, 5)
+        sl = round(float(df["low"].iloc[-6:].min()) - sl_atr_mult * atr, 5)
         if sl < c:
             return {"detected": True, "direction": "buy", "entry": round(c, 5),
                     "sl": sl, "tp": round(c + rr * (c - sl), 5),
                     "reason": "Hybrid-Pro: H1 ขาขึ้น + ย่อ EMA20 + RSI 40-60 + แท่งกลับตัว"}
     if dn and hi >= e20 - 0.3 * atr and rsi_lo <= rsi <= rsi_hi and _bear_trigger(df):
-        sl = round(float(df["high"].iloc[-6:].max()) + 0.2 * atr, 5)
+        sl = round(float(df["high"].iloc[-6:].max()) + sl_atr_mult * atr, 5)
         if sl > c:
             return {"detected": True, "direction": "sell", "entry": round(c, 5),
                     "sl": sl, "tp": round(c - rr * (sl - c), 5),

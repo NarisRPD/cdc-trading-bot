@@ -73,6 +73,7 @@ def record_entry(ticket_id, t: dict) -> None:
         "ai_decision": verdict.get("decision"),
         "ai_conf": verdict.get("confidence"),
         "rr": t.get("rr"),
+        "rsi_tf": t.get("rsi_tf"),       # RSI จาก entry-TF (H1/M15) — ต่างจาก rsi ที่มาจาก CDC TF
         "risk_money": sizing.get("risk_money"),
         "hour_utc": datetime.now(timezone.utc).hour,
         "opened_at": int(datetime.now(timezone.utc).timestamp()),
@@ -186,7 +187,30 @@ def _b_struct(r):
     return ("โครงสร้าง", s) if s else None
 
 
-_BUCKETS = [_b_volume, _b_breakout, _b_threebar, _b_brt, _b_ibb, _b_tlp, _b_rr, _b_dir, _b_stage, _b_aiconf, _b_rsi, _b_candle, _b_struct]
+def _b_rsi_tf(r):
+    """RSI จาก entry-TF จริง (H1/M15) — แยกจาก _b_rsi ที่ใช้ CDC D1"""
+    v = r.get("rsi_tf")
+    if not isinstance(v, (int, float)):
+        return None
+    lab = "<30 oversold" if v < 30 else (">70 overbought" if v > 70 else "30-70 กลาง")
+    return ("RSI entry-TF", lab)
+
+
+def _b_symbol(r):
+    """แยก performance ตาม symbol — รู้ว่าตัวไหน edge ดี/แย่"""
+    s = r.get("symbol")
+    if not s:
+        return None
+    # ตัด suffix โบรก (ETHUSDm → ETHUSD) เพื่อรวมกลุ่มเดียวกัน
+    clean = s.upper()
+    if clean.endswith("M") and len(clean) > 4:
+        clean = clean[:-1]
+    return ("Symbol", clean)
+
+
+_BUCKETS = [_b_volume, _b_breakout, _b_threebar, _b_brt, _b_ibb, _b_tlp,
+            _b_rr, _b_dir, _b_stage, _b_aiconf, _b_rsi, _b_rsi_tf,
+            _b_candle, _b_struct, _b_symbol]
 
 
 def _closed(recs=None) -> list:

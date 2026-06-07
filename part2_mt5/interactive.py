@@ -93,7 +93,8 @@ def _scan_scalp(cfg, broker: set) -> list:
                 continue
         except Exception:  # noqa: BLE001
             pass
-        sig = _scalp.ema_ribbon_stoch(df, oversold=os_lvl, overbought=ob_lvl)
+        sl_mult = float(cfg.get("SCALP_SL_ATR_MULT", "0.6"))
+        sig = _scalp.ema_ribbon_stoch(df, oversold=os_lvl, overbought=ob_lvl, sl_atr_mult=sl_mult)
         if not sig.get("detected"):
             continue
         out.append(({"symbol": sym, "direction": sig["direction"], "zone": None, "rsi": None,
@@ -153,7 +154,8 @@ def _scan_hybrid(cfg, broker: set) -> list:
                 continue
         except Exception:  # noqa: BLE001
             pass
-        sig = _scalp.hybrid_pro(df, rr=rr, rsi_lo=rlo, rsi_hi=rhi)
+        sl_mult = float(cfg.get("HYBRID_SL_ATR_MULT", "0.5"))
+        sig = _scalp.hybrid_pro(df, rr=rr, rsi_lo=rlo, rsi_hi=rhi, sl_atr_mult=sl_mult)
         if not sig.get("detected"):
             continue
         out.append(({"symbol": sym, "direction": sig["direction"], "zone": None, "rsi": None,
@@ -711,6 +713,13 @@ def main():
                             key = sym + dr
                             if now - recent.get(key, 0) < cooldown:
                                 continue
+                            # crypto blackout เพิ่มเติม (ช่วงบาง + options expiry)
+                            if market_hours.category(sym) == "crypto":
+                                c_blk, c_ev = news_guard.is_blackout_crypto(finnhub, blackout_min)
+                                if c_blk:
+                                    scan_res.append((sym, dr, "skip", f"crypto blackout: {c_ev}"))
+                                    log.info("⛔ ข้าม %s — crypto blackout: %s", sym, c_ev)
+                                    continue
                             if max_per_dir > 0 and _count_direction(dr) >= max_per_dir:
                                 scan_res.append((sym, dr, "skip", f"ทิศ {dr} เต็ม ({max_per_dir} ไม้)"))
                                 continue

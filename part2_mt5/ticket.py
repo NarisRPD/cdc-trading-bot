@@ -233,7 +233,8 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
             "breakout": brk, "structure": struct, "three_bar": tbp, "brt": brt,
             "ibb": ibb, "tlp": tlp, "sr": sr, "scalp": scalp.get("tag") if scalp else None,
             "sizing": sizing, "gate": gate, "verdict": verdict, "used_balance": used_bal,
-            "balance_is_test": bal <= 0, "reduced": reduced}
+            "balance_is_test": bal <= 0, "reduced": reduced,
+            "rsi_tf": round(rsi_tf, 1)}   # RSI จาก entry-TF จริง (ต่างจาก bias.rsi ที่มาจาก CDC TF)
 
 
 def format_ticket(t: dict) -> str:
