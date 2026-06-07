@@ -39,7 +39,7 @@ def _trim_unclosed_bar(df: pd.DataFrame, tz: Optional[str] = None) -> pd.DataFra
     if df is None or df.empty:
         return df
     # ใช้ UTC normalize เปรียบเทียบกับ index (yfinance index เป็น tz-naive วันเริ่มแท่ง)
-    today_utc = pd.Timestamp.utcnow().normalize().tz_localize(None)
+    today_utc = pd.Timestamp.now(tz="UTC").normalize().tz_localize(None)
     last_idx = pd.Timestamp(df.index[-1]).normalize()
     # ปลอดภัยเสมอ: ถ้า index ล่าสุด ≥ วันนี้ (UTC) → ถือเป็นแท่งยังไม่ปิด → ตัด
     # (กรณีตลาดเอเชียปิดก่อน UTC midnight เราเสีย 1 แท่งของเมื่อวาน แต่ no-repaint สำคัญกว่า)
