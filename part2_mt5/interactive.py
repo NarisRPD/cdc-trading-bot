@@ -20,7 +20,6 @@ from datetime import datetime, timezone
 
 from _config import load
 import mt5_client as m
-import scan
 import ticket as tk
 import tg
 import execute
@@ -28,8 +27,6 @@ import manage
 import journal
 import learn
 import news_guard
-import read_signals
-from symbol_map import map_symbol
 from run import _watchlist
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -46,26 +43,40 @@ def _ensure_connected(cfg) -> bool:
                      password=cfg["MT5_PASSWORD"], server=cfg["MT5_SERVER"])
 
 
-def _scan_candidates(cfg, broker: set) -> list:
-    """สแกน universe → [(bias, hint)] ที่มีทิศ ไม่ sideway
-    AUTO_UNIVERSE=true → ดึง 'ทุก symbol ที่โบรกมี' (สินทรัพย์ใหม่รวมเองอัตโนมัติ)
-    มิเช่นนั้น → watchlist ดีฟอลต์ + หุ้นจาก Part 1"""
-    hints = {}
-    try:
-        for s in read_signals.fetch_signals(cfg.get("PART1_BOT_URL", ""), cfg.get("SIGNALS_TOKEN", "")):
-            ex = map_symbol(s, broker)
-            if ex:
-                hints[ex] = s
-    except Exception:  # noqa: BLE001
-        pass
-    if cfg.get("AUTO_UNIVERSE", "false").lower() in ("1", "true", "yes", "on"):
-        universe = sorted(broker)                 # ทุกตัวที่โบรกมี — ตัวใหม่รวมเอง (ตัวกรองคัดต่อ)
-    else:
-        watch = _watchlist(cfg, broker)
-        universe = watch + [s for s in hints if s not in watch]
-    log.info("universe: %d symbols", len(universe))
-    biases = scan.scan_broker(universe, m, cfg)
-    return [(b, hints.get(b["symbol"])) for b in biases]
+def _scan_supertrend(cfg, broker: set) -> list:
+    """#1 สแกน SuperTrend signal บน TF ที่กำหนด (default H1) — แทน CDC scan
+    ตรวจ flip ล่าสุด (fresh_bars แท่ง) ไม่เอาสัญญาณค้างเก่า
+    ATR-adaptive: SL ติดตาม SuperTrend line → ปรับตามความผันผวนจริง"""
+    import scalp as _scalp
+    import market_hours
+    import pandas as pd
+    tf = cfg.get("ST_TF", "H1")
+    period = int(cfg.get("ST_PERIOD", "10"))
+    mult = float(cfg.get("ST_MULT", "3.0"))
+    fresh = int(cfg.get("ST_FRESH_BARS", "3"))
+    rr = float(cfg.get("ST_RR", "2.0"))
+    stale_min = 90 if tf in ("H1", "H4") else 45      # ยอมให้แท่งเก่าได้ตาม TF
+    out = []
+    for sym in _watchlist(cfg, broker):
+        df = m.rates(sym, tf, 200)
+        if df is None or len(df) < 100 or "time" not in df.columns:
+            continue
+        try:
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _scalp.supertrend_signal(df, period=period, mult=mult, fresh_bars=fresh)
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "source": "supertrend",
+                     "st_value": sig.get("st_value"), "rsi": None,
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"SuperTrend {tf} (×{mult})"}}, None))
+    if out:
+        log.info("supertrend(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
 
 
 def _scan_scalp(cfg, broker: set) -> list:
@@ -501,9 +512,8 @@ def main():
     cooldown = int(cfg.get("SYMBOL_COOLDOWN_SEC", "3600"))
     execute_on = cfg.get("EXECUTE_ORDERS", "false").lower() in ("1", "true", "yes", "on")
     auto_on = cfg.get("AUTO_TRADE", "false").lower() in ("1", "true", "yes", "on")
-    cdc_lead = cfg.get("CDC_LEAD", "false").lower() in ("1", "true", "yes", "on")
-    ai_veto_conf = int(cfg.get("AI_VETO_CONF", "80"))             # AI ห้าม (skip) มั่นใจ ≥ นี้ → เชื่อ AI ข้าม (แม้ CDC นำ)
-    use_ema_stoch = cfg.get("USE_EMA_STOCH", "false").lower() in ("1", "true", "yes", "on")  # scalp EMA+Stoch M15 (เติมจังหวะระหว่างวัน)
+    use_supertrend = cfg.get("USE_SUPERTREND", "true").lower() in ("1", "true", "yes", "on")  # SuperTrend H1 — สัญญาณหลัก
+    use_ema_stoch = cfg.get("USE_EMA_STOCH", "false").lower() in ("1", "true", "yes", "on")   # scalp EMA+Stoch M15
     use_fx_orb = cfg.get("USE_FX_ORB", "false").lower() in ("1", "true", "yes", "on")        # Asian-London ORB เฉพาะ FX
     use_hybrid = cfg.get("USE_HYBRID_PRO", "false").lower() in ("1", "true", "yes", "on")    # Hybrid-Pro (H1 trend + M15 pullback)
     max_pos = int(cfg.get("MAX_OPEN_POSITIONS", "5"))
@@ -525,8 +535,6 @@ def main():
     tg.set_commands(token)       # ลงเมนูคำสั่งใน Telegram
     journal.record_closed()      # seed เงียบ ๆ ตอนเริ่ม (กันรายงานไม้เก่าย้อนหลังตอนบูต)
     mode_txt = (("🔁 Auto ยิงจริง" if execute_on else "🔁 Auto ทดสอบ") if auto_on else "✋ Manual กดปุ่ม")
-    if cdc_lead and auto_on:
-        mode_txt += " · 📉 CDC นำ"
     log.info("เริ่ม Part 2 · โหมด=%s · TTL=%ds · maxpos=%d", mode_txt, ttl, max_pos)
     tg.send_text(token, chat, f"🤖 Part 2 เริ่มทำงาน · โหมด {mode_txt}\n"
                               "พิมพ์ /help ดูคำสั่ง · /pause หยุดชั่วคราว · /closeall ปิดไม้ทั้งหมด")
@@ -692,13 +700,15 @@ def main():
                         last_scan = now
                 else:
                     if not queue and now - last_scan > scan_gap:
-                        queue = _scan_candidates(cfg, set(m.list_symbols()))
-                        if use_ema_stoch and auto_on:     # เติมไม้ scalp ตามเทรนด์ (ต่อท้าย CDC = CDC ได้สิทธิ์ก่อน)
-                            queue += _scan_scalp(cfg, set(m.list_symbols()))
-                        if use_fx_orb and auto_on:        # เติมไม้ FX ORB ช่วง London เปิด
-                            queue += _scan_fx_orb(cfg, set(m.list_symbols()))
-                        if use_hybrid and auto_on:        # เติมไม้ Hybrid-Pro (trend-pullback multi-TF)
-                            queue += _scan_hybrid(cfg, set(m.list_symbols()))
+                        syms = set(m.list_symbols())
+                        if use_supertrend:                 # SuperTrend H1 — สัญญาณหลัก (แทน CDC)
+                            queue = _scan_supertrend(cfg, syms)
+                        if use_ema_stoch and auto_on:      # EMA+Stoch M15 — เติมจังหวะ
+                            queue += _scan_scalp(cfg, syms)
+                        if use_fx_orb and auto_on:         # FX ORB ช่วง London
+                            queue += _scan_fx_orb(cfg, syms)
+                        if use_hybrid and auto_on:         # Hybrid-Pro (H1+M15 multi-TF)
+                            queue += _scan_hybrid(cfg, syms)
                         last_scan = now
                         log.info("สแกนได้ %d ตัวมีทิศ", len(queue))
                     if auto_on:
@@ -740,14 +750,12 @@ def main():
                             dec = t["verdict"].get("decision")
                             conf = t["verdict"].get("confidence") or 0
                             if dec not in accept:
-                                # เชื่อ AI: ถ้าไม่ใช่ CDC นำ หรือ (AI ห้ามด้วยความมั่นใจสูง) → ข้าม
-                                if (not cdc_lead) or (dec == "skip" and conf >= ai_veto_conf):
-                                    scan_res.append((sym, dr, "skip", f"AI {dec} {conf}%"))
-                                    log.info("⛔ ข้าม %s %s — เชื่อ AI (%s %s%%) %s", sym, dr, dec, conf,
-                                             (t["verdict"].get("reason") or "")[:60])
-                                    recent[key] = now + scan_gap   # shift forward: สแกนถัดมา (~scan_gap วิ) ยังอยู่ใน cooldown แน่นอน
-                                    continue
-                                log.info("📉 CDC นำ: เข้า %s %s ไม้เล็ก (AI: %s %s%%)", sym, dr, dec, conf)
+                                # AI บอก skip/manual → เชื่อ AI ข้ามทันที (ไม่มีโหมด CDC นำแล้ว)
+                                scan_res.append((sym, dr, "skip", f"AI {dec} {conf}%"))
+                                log.info("⛔ ข้าม %s %s — AI: %s %s%% %s", sym, dr, dec, conf,
+                                         (t["verdict"].get("reason") or "")[:60])
+                                recent[key] = now + scan_gap   # กัน re-scan รอบถัดมาทันที
+                                continue
                             recent[key] = now
                             if _auto_open(cfg, token, chat, t, execute_on):
                                 opened.add(sym)

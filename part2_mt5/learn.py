@@ -56,11 +56,8 @@ def record_entry(ticket_id, t: dict) -> None:
         "pos": pos,
         "symbol": t.get("exsym"),
         "direction": t.get("direction"),
-        "zone": bias.get("zone"),
-        "stars": bias.get("stars"),
-        "stage": bias.get("stage"),
-        "trend_r2": bias.get("trend_r2"),
-        "rsi": bias.get("rsi"),
+        "source": bias.get("source"),        # supertrend / hybrid / scalp / fx_orb
+        "st_value": bias.get("st_value"),    # SuperTrend line value (ถ้าสัญญาณมาจาก SuperTrend)
         "candles": [c.get("name") for c in (t.get("candles") or [])],
         "vol_entering": vol.get("entering"),
         "vol_ratio": vol.get("ratio"),

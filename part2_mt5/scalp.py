@@ -1,12 +1,13 @@
 """
-part2_mt5/scalp.py — กลยุทธ์เทรดสั้น "ตามเทรนด์" ระหว่างรอสัญญาณหลัก (CDC)
-เปิดใช้งานผ่าน flag เท่านั้น (USE_EMA_STOCH / USE_ORB) — ดีฟอลต์ปิด จนกว่าจะ backtest ผ่าน
+part2_mt5/scalp.py — กลยุทธ์เทรดสั้น (ไม่พึ่ง CDC — ทำงานจาก OHLC ล้วน)
 
-หลักคิด: ของพวกนี้ "เติมจังหวะระหว่างวัน" ไม่ใช่หัวใจ — ต้องผ่านเกราะเดิมทุกด่าน
-(RSI สุดขั้ว, MIN_RR, spread, MAX_RISK, Gemini, กระจายกลุ่ม) เหมือนไม้ปกติ
+กลยุทธ์ทั้งหมดต้องผ่านเกราะเดิมทุกด่าน:
+(RSI สุดขั้ว, MIN_RR, spread, MAX_RISK, Gemini, กระจายกลุ่ม)
 
-#1 EMA Ribbon + Stochastic = ตามเทรนด์ (price>EMA50>EMA200) + ย่อแตะ EMA50 + Stoch ตัดขึ้นจาก oversold
+#1 SuperTrend (ATR-based) = เทรนด์ผ่อน-ผัน ปรับตามความผันผวนจริง ไม่ lagging เท่า EMA crossover
+#2 EMA Ribbon + Stochastic = ตามเทรนด์ (price>EMA50>EMA200) + ย่อแตะ EMA50 + Stoch ตัดขึ้นจาก oversold
 #3 Opening Range Breakout (ORB) = เบรกกรอบ High/Low ช่วงตลาดเปิด (ผันผวนสูง)
+#4 Hybrid-Pro = H1 EMA50>EMA200 + M15 ย่อ EMA20 + RSI 40-60 + แท่งกลับตัว
 
 ทำงานบน DataFrame OHLC (คอลัมน์ time/open/high/low/close/volume) — ไม่พึ่ง MT5/Part 1
 """
@@ -182,6 +183,104 @@ def asian_london_orb(df, asian_start: int = 0, asian_end: int = 6,
                 "sl": round(mid, 5), "tp": round(c - width, 5),
                 "reason": f"ORB เบรกกรอบเอเชียลง (London) กว้าง {round(width, 5)}"}
     return {"detected": False}
+
+
+def supertrend(df, period: int = 10, mult: float = 3.0) -> dict:
+    """#1 SuperTrend indicator แบบ numpy — ATR-based ปรับตามความผันผวนจริง
+    ดีกว่า CDC EMA crossover สำหรับเทรดสั้น: ไม่ lagging, ลด whipsaw ในตลาดผันผวน
+
+    คืน dict: {st, direction (+1=buy/-1=sell), flipped, upper, lower}
+    band จะขยับทิศเดียว (ratchet) → กันสัญญาณหลอกซ้ำๆ ในกรอบแคบ"""
+    n = len(df)
+    if n < period + 5:
+        return {"st": None}
+    h = df["high"].astype(float).values
+    l = df["low"].astype(float).values
+    c = df["close"].astype(float).values
+
+    # ATR (True Range) — full series
+    pc = np.roll(c, 1); pc[0] = c[0]
+    tr = np.maximum(h - l, np.maximum(np.abs(h - pc), np.abs(l - pc)))
+    atr_arr = np.zeros(n)
+    for i in range(period - 1, n):
+        atr_arr[i] = tr[max(0, i - period + 1):i + 1].mean()
+    atr_arr[:period - 1] = atr_arr[period - 1]
+
+    hl2 = (h + l) / 2.0
+    bu = hl2 + mult * atr_arr   # basic upper band
+    bl = hl2 - mult * atr_arr   # basic lower band
+
+    # Final bands — band ขยับได้ทิศเดียว (ratchet effect → กัน whipsaw)
+    fu, fl = bu.copy(), bl.copy()
+    for i in range(1, n):
+        fu[i] = bu[i] if (bu[i] < fu[i-1] or c[i-1] > fu[i-1]) else fu[i-1]
+        fl[i] = bl[i] if (bl[i] > fl[i-1] or c[i-1] < fl[i-1]) else fl[i-1]
+
+    # SuperTrend: ติดตาม lower band ตอนขาขึ้น, upper band ตอนขาลง
+    st = fu.copy()
+    dr = np.full(n, -1, dtype=int)   # -1=sell, +1=buy
+    for i in range(1, n):
+        if st[i-1] == fu[i-1]:       # ก่อนหน้าเป็นขาลง
+            st[i] = fu[i] if c[i] <= fu[i] else fl[i]
+        else:                          # ก่อนหน้าเป็นขาขึ้น
+            st[i] = fl[i] if c[i] >= fl[i] else fu[i]
+        dr[i] = 1 if st[i] == fl[i] else -1
+
+    flipped = np.zeros(n, dtype=bool)
+    flipped[1:] = dr[1:] != dr[:-1]   # แท่งที่เพิ่งเปลี่ยนทิศ
+
+    return {"st": st, "direction": dr, "flipped": flipped, "upper": fu, "lower": fl}
+
+
+def supertrend_signal(df, period: int = 10, mult: float = 3.0,
+                      fresh_bars: int = 3, sl_atr_mult: float = 0.3) -> dict:
+    """สัญญาณ SuperTrend — ตรวจ flip ล่าสุด แล้วส่งคืน signal dict
+    fresh_bars: นับว่าใหม่ถ้า flip เกิดใน N แท่งล่าสุด (ไม่เอาสัญญาณเก่าค้าง)
+    SL = SuperTrend line ± sl_atr_mult * ATR (กันชนไม่ให้โดน noise เขี่ย)
+    คืน {detected, direction, entry, sl, st_value, flip_bars_ago, reason}"""
+    if df is None or len(df) < period + 20:
+        return {"detected": False}
+    result = supertrend(df, period, mult)
+    if result.get("st") is None:
+        return {"detected": False}
+
+    st_arr = result["st"]
+    dr_arr = result["direction"]
+    flip_arr = result["flipped"]
+
+    # หา flip ล่าสุดใน fresh_bars แท่ง
+    flip_bar = 0
+    for i in range(1, min(fresh_bars + 1, len(flip_arr) + 1)):
+        if flip_arr[-i]:
+            flip_bar = i
+            break
+    if not flip_bar:
+        return {"detected": False}
+
+    direction = "buy" if int(dr_arr[-1]) == 1 else "sell"
+    c = float(df["close"].iloc[-1])
+    st_val = float(st_arr[-1])
+    atr_val = _atr(df)
+
+    # SL อิง SuperTrend line (แนวรับ/ต้าน dynamic) + ATR buffer เล็กน้อยกัน noise
+    if direction == "buy":
+        sl = round(st_val - sl_atr_mult * atr_val, 5)
+        if sl >= c:   # SL ผิดด้าน (ราคาเลยไปแล้ว) → ข้าม
+            return {"detected": False}
+    else:
+        sl = round(st_val + sl_atr_mult * atr_val, 5)
+        if sl <= c:
+            return {"detected": False}
+
+    return {
+        "detected": True,
+        "direction": direction,
+        "entry": round(c, 5),
+        "sl": sl,
+        "st_value": round(st_val, 5),
+        "flip_bars_ago": flip_bar,
+        "reason": f"SuperTrend flip {flip_bar} แท่งที่แล้ว → {direction.upper()} (ST={round(st_val, 4)})"
+    }
 
 
 def _rsi(s, n: int = 14):

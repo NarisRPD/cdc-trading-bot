@@ -54,25 +54,12 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     spot = px["ask"] if direction == "buy" else px["bid"]
     atr = _atr(df, 14)
 
-    # เกราะ RSI สุดขั้ว (2 ชั้น):
-    # ชั้น 1 — bias.rsi จาก CDC scan (TF สูง เช่น D1)
-    # ชั้น 2 — คำนวณ RSI จาก entry-TF จริง (H1) เพื่ออุดช่องโหว่กรณี CDC ใช้ TF ต่าง
+    # เกราะ RSI สุดขั้ว — คำนวณจาก entry-TF จริง (M15/H1)
     # → กันขายก้นเหว (sell ตอน oversold) / ซื้อยอดดอย (buy ตอน overbought)
-    rsi_ovs = float(cfg.get("RSI_OVERSOLD", "30"))   # default 30 — block sell ตอน oversold
-    rsi_obt = float(cfg.get("RSI_OVERBOUGHT", "70")) # default 70 — block buy ตอน overbought
+    rsi_ovs = float(cfg.get("RSI_OVERSOLD", "30"))   # block sell เมื่อ RSI < ค่านี้
+    rsi_obt = float(cfg.get("RSI_OVERBOUGHT", "70")) # block buy เมื่อ RSI > ค่านี้
 
-    rsi = bias.get("rsi")
-    if isinstance(rsi, (int, float)):
-        if direction == "sell" and rsi < rsi_ovs:
-            log.info("ข้าม %s — RSI(CDC) %.0f oversold (ไม่ช็อตก้นเหว)", exsym, rsi)
-            return {"skipped": True, "exsym": exsym, "direction": direction,
-                    "reason": f"RSI(CDC) {rsi:.0f} oversold (ไม่ช็อตก้นเหว)"}
-        if direction == "buy" and rsi > rsi_obt:
-            log.info("ข้าม %s — RSI(CDC) %.0f overbought (ไม่ long ยอดดอย)", exsym, rsi)
-            return {"skipped": True, "exsym": exsym, "direction": direction,
-                    "reason": f"RSI(CDC) {rsi:.0f} overbought (ไม่ long ยอดดอย)"}
-
-    # ชั้น 2: RSI จาก entry-TF (H1) — อุดช่องโหว่กรณี CDC ดู D1 แต่ H1 oversold/overbought แล้ว
+    # RSI จาก entry-TF จริง
     import numpy as _np
     _c = df["close"].astype(float)
     _d = _c.diff()
@@ -205,15 +192,14 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     ctx = {
         "symbol": exsym, "direction": direction, "entry": round(spot, 5), "sl": round(sl, 5),
         "tp": round(tp, 5) if tp else None, "rr": round(rr_val, 2) if rr_val else None,
-        "cdc_zone": bias.get("zone"), "cdc_fresh_signal": bias.get("signal"), "stars": bias.get("stars"),
-        "stage": bias.get("stage"), "trend_r2": bias.get("trend_r2"), "rsi": bias.get("rsi"),
+        "source": bias.get("source"),            # supertrend / hybrid / scalp / fx_orb
+        "st_value": bias.get("st_value"),        # SuperTrend line value (ถ้ามี)
         "candles": [c["name"] for c in cdl], "volume_entering": vol.get("entering"),
         "volume_ratio": vol.get("ratio"), "breakout": brk.get("type") if brk else None,
         "three_bar_play": tbp.get("detected"), "breakout_retest": brt.get("detected"),
         "inside_bar_breakout": ibb.get("detected"), "two_leg_pullback": tlp.get("detected"),
         "near_resistance": sr.get("near_resistance"), "near_support": sr.get("near_support"),
         "structure": struct.get("label"), "risk_gate_ok": gate["ok"], "risk_gate_reasons": gate["reasons"],
-        "part1_agrees": (part1_hint.get("direction") == direction) if part1_hint else None,
     }
     memory = learn.summary_for_ai(int(cfg.get("LEARN_MIN_SAMPLES", "10")))   # บทเรียนจากผลจริง
     verdict = gemini_gate.assess(ctx, cfg.get("GEMINI_API_KEY"), memory)
@@ -228,13 +214,13 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         if scaled and scaled.get("lots", 0) > 0:
             sizing = scaled
 
-    return {"exsym": exsym, "bias": bias, "part1_hint": part1_hint, "direction": direction,
+    return {"exsym": exsym, "bias": bias, "direction": direction,
             "spot": spot, "sl": sl, "tp": tp, "rr": rr_val, "atr": atr, "candles": cdl, "vol": vol,
             "breakout": brk, "structure": struct, "three_bar": tbp, "brt": brt,
             "ibb": ibb, "tlp": tlp, "sr": sr, "scalp": scalp.get("tag") if scalp else None,
             "sizing": sizing, "gate": gate, "verdict": verdict, "used_balance": used_bal,
             "balance_is_test": bal <= 0, "reduced": reduced,
-            "rsi_tf": round(rsi_tf, 1)}   # RSI จาก entry-TF จริง (ต่างจาก bias.rsi ที่มาจาก CDC TF)
+            "rsi_tf": round(rsi_tf, 1)}   # RSI จาก entry-TF จริง (M15/H1)
 
 
 def format_ticket(t: dict) -> str:
@@ -248,20 +234,14 @@ def format_ticket(t: dict) -> str:
     lines = [f"📋 ใบสั่งเทรด — {t['exsym']}",
              f"ทิศ: {_DIR_TH.get(t['direction'], t['direction'])}   [AI: {_DECISION_TH.get(d, d)}"
              + (f" {v['confidence']}%" if v.get("confidence") is not None else "") + "]"]
-    # CDC (จากราคา Exness)
-    cdc = f"📐 CDC: {b.get('zone')}" + (" (สัญญาณใหม่)" if b.get("is_fresh") else "")
-    if b.get("stars") is not None:
-        cdc += f" · ⭐{b['stars']}"
-    if b.get("stage"):
-        cdc += f" · Stage {b['stage']}"
-    if b.get("trend_r2") is not None:
-        cdc += f" · R² {b['trend_r2']}"
-    lines.append(cdc)
-    if t.get("part1_hint"):
-        h = t["part1_hint"]
-        stars = f" ⭐{h.get('stars')}" if h.get("stars") is not None else ""
-        verdict = "เห็นพ้อง ✅" if h.get("direction") == t["direction"] else "ทิศต่าง ⚠️"
-        lines.append(f"📡 มาจาก Part 1: {h.get('section')}{stars} ({verdict})")
+    # แหล่งสัญญาณ (SuperTrend / Hybrid-Pro / EMA+Stoch / FX ORB)
+    _src_map = {"supertrend": "📈 SuperTrend", "hybrid": "🔀 Hybrid-Pro",
+                "scalp": "⚡ EMA+Stoch", "fx_orb": "🌅 FX ORB"}
+    src = b.get("source", "")
+    src_txt = _src_map.get(src, f"📊 {src}" if src else "📊 สัญญาณ")
+    if b.get("st_value"):
+        src_txt += f" · ST={b['st_value']}"
+    lines.append(src_txt)
     # ยืนยัน Part 2
     conf = []
     if t["candles"]:
