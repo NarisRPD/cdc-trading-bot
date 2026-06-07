@@ -323,6 +323,7 @@ def _scan_pa(cfg, broker: set) -> list:
       patterns.breakout_retest()    → ตรวจ Breakout & Retest pattern
     """
     import candles
+    import patterns   # ต้อง import ใน function scope — ไม่ได้ import ที่ module level ใน interactive.py
     import pandas as pd
     tf = cfg.get("PA_TF", "H1")
     rr = float(cfg.get("PA_RR", "2.0"))
@@ -764,7 +765,7 @@ def main():
     use_hybrid = cfg.get("USE_HYBRID_PRO", "false").lower() in ("1", "true", "yes", "on")    # Hybrid-Pro (H1 trend + M15 pullback)
     use_pa     = cfg.get("USE_PA", "false").lower() in ("1", "true", "yes", "on")           # Price Action & Market Structure H1
     max_pos = int(cfg.get("MAX_OPEN_POSITIONS", "5"))
-    notify_scan = cfg.get("NOTIFY_SCAN", "true").lower() in ("1", "true", "yes", "on")
+    notify_scan = cfg.get("NOTIFY_SCAN", "false").lower() in ("1", "true", "yes", "on")
     max_dd = float(cfg.get("MAX_DRAWDOWN_PCT", "0") or "0")        # เบรกขาดทุนสะสม (0=ปิด)
     max_per_dir = int(cfg.get("MAX_PER_DIRECTION", "0") or "0")    # จำกัดไม้ทิศเดียวกัน (0=ไม่จำกัด)
     max_per_grp = int(cfg.get("MAX_PER_GROUP", "1") or "0")        # ไม้/กลุ่ม ดีฟอลต์ (จ-ศ · 0=ไม่จำกัด)
@@ -783,9 +784,11 @@ def main():
     tg.set_commands(token)       # ลงเมนูคำสั่งใน Telegram
     journal.record_closed()      # seed เงียบ ๆ ตอนเริ่ม (กันรายงานไม้เก่าย้อนหลังตอนบูต)
     mode_txt = (("🔁 Auto ยิงจริง" if execute_on else "🔁 Auto ทดสอบ") if auto_on else "✋ Manual กดปุ่ม")
-    log.info("เริ่ม Part 2 · โหมด=%s · TTL=%ds · maxpos=%d", mode_txt, ttl, max_pos)
-    tg.send_text(token, chat, f"🤖 Part 2 เริ่มทำงาน · โหมด {mode_txt}\n"
-                              "พิมพ์ /help ดูคำสั่ง · /pause หยุดชั่วคราว · /closeall ปิดไม้ทั้งหมด")
+    log.info("เริ่ม Part 2 · โหมด=%s · TTL=%ds · สแกนทุก%.1fนาที · maxpos=%d",
+             mode_txt, ttl, scan_gap / 60, max_pos)
+    tg.send_text(token, chat,
+                 f"🤖 Part 2 เริ่มทำงาน · โหมด {mode_txt} · สแกนทุก {scan_gap // 60} นาที\n"
+                 "พิมพ์ /help ดูคำสั่ง · /pause หยุดชั่วคราว · /closeall ปิดไม้ทั้งหมด")
 
     # ── Drain pending Telegram messages ─────────────────────────────────────
     # ทุกครั้งที่บอทเริ่มใหม่ offset=0 → Telegram ส่ง command เก่า (/stop /restart) กลับมา
@@ -812,6 +815,7 @@ def main():
     _in_blackout = False   # สถานะ blackout ปัจจุบัน — แจ้ง Telegram แค่ครั้งแรกที่เข้า/ออก
     last_heartbeat = 0.0   # timestamp ส่ง heartbeat ล่าสุด
     _pos_full = False      # สถานะไม้เต็มรอบก่อน — แจ้ง Telegram เมื่อเต็ม/ว่างครั้งแรก
+    last_notify_ts = 0.0   # timestamp ส่ง scan summary ล่าสุด — กัน spam ถี่กว่า scan_gap
 
     while True:
         try:
@@ -1010,7 +1014,9 @@ def main():
                 log.info("ไม้ว่าง %d/%d → กลับมาสแกน", open_n, max_pos)
             _pos_full = _now_full
 
-            if auto_on and open_n < prev_open:        # มีไม้เพิ่งปิด (TP/SL) → สแกนหาตัวใหม่ทันที
+            # มีไม้เพิ่งปิด (TP/SL) → สแกนหาตัวใหม่โดยเร็ว
+            # กำหนด minimum 60s กัน MT5 connection กระพริบแล้วทำ force-rescan ซ้ำทุกรอบ
+            if auto_on and open_n < prev_open and now - last_scan > 60:
                 last_scan = 0.0
                 queue.clear()   # ล้าง queue เก่า — สัญญาณอาจ stale หลังจากไม้ปิด
                 log.info("มีไม้ปิด เหลือ %d ไม้ → สแกนใหม่ทันที (queue ล้างแล้ว)", open_n)
@@ -1098,11 +1104,19 @@ def main():
                             if _auto_open(cfg, token, chat, t, execute_on):
                                 opened.add(sym)
                                 scan_res.append((sym, dr, "open", _strat_tags(t)))
-                        if scan_res and notify_scan:              # ส่งสรุปสแกน (ไม่ส่งซ้ำถ้าผลเหมือนเดิม)
-                            kset = frozenset((s, st) for s, _, st, _ in scan_res)
-                            if kset != last_scan_key:
-                                tg.send_text(token, chat, _scan_summary(scan_res))
-                                last_scan_key = kset
+                        if scan_res:
+                            # scan summary → log เสมอ (เพื่อ debug ใน part2.log)
+                            log.info("scan: %s", "; ".join(
+                                f"{'✅' if st=='open' else '⛔'} {s} {dr} {detail or ''}"
+                                for s, dr, st, detail in scan_res))
+                            # แจ้ง Telegram เฉพาะเมื่อ NOTIFY_SCAN=true (default=false — ลด spam)
+                            # และ throttle ไม่เกิน 1 ครั้ง/scan_gap (กัน force-rescan ส่งซ้ำ)
+                            if notify_scan:
+                                kset = frozenset((s, st) for s, _, st, _ in scan_res)
+                                if kset != last_scan_key and now - last_notify_ts >= scan_gap:
+                                    tg.send_text(token, chat, _scan_summary(scan_res))
+                                    last_scan_key = kset
+                                    last_notify_ts = now
                     else:
                         # โหมด Manual: เสนอใบ + ปุ่มทีละใบ
                         opened = _open_symbols()   # ตรวจไม้ที่ถืออยู่ — กันเสนอซ้ำตัวเดิม
