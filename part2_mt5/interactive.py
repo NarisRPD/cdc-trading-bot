@@ -348,13 +348,13 @@ def _help_text() -> str:
         "/closeall — 🧹 ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)\n"
         "/help — รายการคำสั่งนี้\n\n"
         "🔁 โหมด Auto: บอทสแกน → ตัดสินใจ → ยิงออเดอร์เอง → รายงานที่นี่\n"
-        "   เปิดไม้ใหม่เมื่อผ่านด่าน: CDC + แท่งเทียน/วอลุ่ม + Gemini + เกราะความเสี่ยง\n\n"
+        "   เปิดไม้ใหม่เมื่อผ่านด่าน: SuperTrend/HalfTrend/UT Bot + แท่งเทียน/วอลุ่ม + Gemini + เกราะความเสี่ยง\n\n"
         "ℹ️ จัดการเอง: TP +2% ของราคา · +1R เลื่อน SL เท่าทุน · เลี่ยงข่าวแรง\n"
         "🛡️ เกราะ: เบรกขาดทุนวัน + ขาดทุนสะสม (drawdown) · จำกัดไม้ทิศเดียว · สรุปประจำวัน"
     )
 
 
-def _status_text(auto_on: bool, execute_on: bool, cdc_lead: bool = False) -> str:
+def _status_text(auto_on: bool, execute_on: bool) -> str:
     import MetaTrader5 as m5
     acc = m.account() or {}
     poss = [p for p in (m5.positions_get() or []) if p.magic == 260605]
@@ -362,8 +362,6 @@ def _status_text(auto_on: bool, execute_on: bool, cdc_lead: bool = False) -> str
         mode = "🔁 Auto (ยิงจริง)" if execute_on else "🔁 Auto (ทดสอบ ไม่ยิงจริง)"
     else:
         mode = "✋ Manual (กดปุ่มเอง)"
-    if cdc_lead and auto_on:
-        mode += " · 📉 CDC นำ"
     if _is_paused():
         mode += " · ⏸️ หยุดเปิดไม้ใหม่"
     lines = ["🤖 Part 2 — ทำงานอยู่ ✅",
@@ -447,7 +445,7 @@ def _open_report(t: dict, res: "dict | None") -> str:
         lines.append(f"📦 Lot {sz.get('lots')} · เสี่ยงจริง ${sz.get('risk_money')}"
                      + (f" ({sz.get('actual_pct')}% ของพอร์ต)" if sz.get("actual_pct") is not None else ""))
     if t.get("reduced"):
-        lines.append("⚠️ ไม้เล็ก (CDC นำ — AI ขอระวัง จึงลดขนาด)")
+        lines.append("⚠️ ไม้เล็ก (AI ขอระวัง จึงลดขนาด)")
     v = t.get("verdict") or {}
     if v.get("reason"):
         lines.append("🤖 " + v["reason"])
@@ -653,7 +651,7 @@ def main():
                     if cmd in ("help", "start"):
                         tg.send_text(token, chat, _help_text())
                     elif cmd == "status" and _ensure_connected(cfg):
-                        tg.send_text(token, chat, _status_text(auto_on, execute_on, cdc_lead))
+                        tg.send_text(token, chat, _status_text(auto_on, execute_on))
                     elif cmd == "stats":
                         tg.send_text(token, chat, _stats_text())
                     elif cmd == "insights":

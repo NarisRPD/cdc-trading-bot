@@ -1,7 +1,7 @@
 """
 part2_mt5/gemini_gate.py — Gemini "ด่านปิดช่องโหว่" ก่อนออกใบสั่งเทรด
 
-หลักการ (กัน hallucination): ป้อน "ภาพรวมไม้จริง" (ตัวเลขจาก CDC + แท่งเทียน + risk)
+หลักการ (กัน hallucination): ป้อน "ภาพรวมไม้จริง" (ตัวเลขจาก signal + แท่งเทียน + risk)
 ให้ Gemini ทำหน้าที่ "ทนายฝ่ายตรงข้าม" — หาเหตุผลว่าไม้นี้จะแพ้ได้ยังไง
 → จับความผิดพลาดที่เห็นชัดแต่คนมองข้ามตอนใจร้อน (ไล่ของแพง/สวนเทรนด์/R:R แย่/ชนแนวต้าน)
 
@@ -51,8 +51,8 @@ def _call(prompt: str, key: str, model: str) -> Optional[dict]:
 
 
 def assess(ctx: dict, api_key: Optional[str] = None, memory: str = "") -> dict:
-    """ctx = ภาพรวมไม้จริง (symbol, direction, entry, sl, tp, rr, lot, cdc bias, stage,
-    trend_r2, candles, volume, position_in_trend, near_resistance, news ...)
+    """ctx = ภาพรวมไม้จริง (symbol, direction, entry, sl, tp, rr, lot, source, st_value,
+    candles, volume, position_in_trend, near_resistance, news ...)
     memory = บทเรียนจากสถิติจริงที่ผ่านมา (ถ้ามี) → AI ใช้เป็นน้ำหนักประกอบให้ฉลาดขึ้น
     คืน {decision, confidence, risks[], reason} · ไม่มี key → ให้คนตรวจเอง (ไม่บล็อก)"""
     key = api_key or os.getenv("GEMINI_API_KEY", "").strip()

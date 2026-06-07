@@ -1,11 +1,10 @@
 """
-part2_mt5/ticket.py — ประกอบ "ใบสั่งเทรด" จาก bias (CDC บนข้อมูล MT5) + วิเคราะห์ Part 2
+part2_mt5/ticket.py — ประกอบ "ใบสั่งเทรด" จาก bias (SuperTrend/HalfTrend/UT Bot บนข้อมูล MT5) + วิเคราะห์ Part 2
 
 ขั้นตอน: ดึง OHLC entry-TF → แท่งเทียน/วอลุ่ม/โครงสร้าง → SL จากโครงสร้าง + TP R:R
 → lot จากสเปกโบรกจริง → risk gate → Gemini ปิดช่องโหว่ → ข้อความใบสั่ง (คนกดเอง)
 
-bias มาจาก scan.analyze (CDC ของ Part 1 บนราคา Exness). part1_hint = สัญญาณ Part 1
-ของ symbol เดียวกัน (ถ้ามี) ใช้เป็น confluence เสริมให้ Gemini
+bias มาจาก _scan_supertrend / _scan_halftrend / _scan_utbot (ราคา Exness จริง)
 """
 from __future__ import annotations
 import logging
@@ -82,7 +81,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     else:
         sl = max(float(df["high"].iloc[-lb:].max()), spot + mult * atr)
 
-    # 3-Bar Play: ตรวจบน TF เร็ว (เช่น M15) เพื่อจับโมเมนตัมไว — CDC ยังดูเทรนด์ D1 เหมือนเดิม
+    # 3-Bar Play: ตรวจบน TF เร็ว (เช่น M15) เพื่อจับโมเมนตัมไว — เสริม SL แคบกว่า ATR swing
     bp_tf = cfg.get("THREEBP_TF", entry_tf) or entry_tf
     bp_df = mt5.rates(exsym, bp_tf, 200) if bp_tf.upper() != entry_tf.upper() else df
     bp_atr = _atr(bp_df, 14) if (bp_df is not None and len(bp_df) >= 20) else atr
@@ -205,7 +204,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     verdict = gemini_gate.assess(ctx, cfg.get("GEMINI_API_KEY"), memory)
 
     # ปรับขนาดไม้ตามความมั่นใจ AI: enter=เต็ม · small/skip/manual=เล็กลง
-    # (โหมด CDC นำ: ไม้ที่ AI ขอระวังยังเทรดได้ แต่ลดความเสี่ยงลง — กันเด้งสวน)
+    # (ไม้ที่ AI ขอระวัง (small/skip) ยังเทรดได้ แต่ลดความเสี่ยงลง — กันเด้งสวน)
     dec = verdict.get("decision", "manual")
     reduced = dec != "enter"
     if reduced and sizing and sizing.get("lots", 0) > 0:
