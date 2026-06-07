@@ -4,6 +4,8 @@ set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 :: %~dp0 = directory ของ bat file เอง (ใช้ได้ทั้ง local และ VPS ไม่ต้อง hardcode path)
 cd /d "%~dp0"
+:: สร้าง flag ถ้ายังไม่มี (ถูกลบโดย /stop → ต้องสร้างใหม่เมื่อ start)
+if not exist "part2_should_run.flag" echo. > part2_should_run.flag
 :loop
 if not exist "part2_should_run.flag" goto end
 echo [%date% %time%] Starting interactive.py ... >> part2.log
