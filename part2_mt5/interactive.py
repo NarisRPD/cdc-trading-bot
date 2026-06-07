@@ -408,8 +408,9 @@ def _help_text() -> str:
         "/pause — ⏸️ หยุดเปิดไม้ใหม่ชั่วคราว (ไม้เก่ายังจัดการต่อ)\n"
         "/resume — ▶️ กลับมาเปิดไม้อัตโนมัติ\n"
         "/closeall — 🧹 ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)\n"
+        "/update — ⬇️ ดึงโค้ดใหม่จาก GitHub แล้ว restart (ใช้ทุกครั้งที่อัปเดต)\n"
         "/stop — 🛑 หยุดบอท (ไม้ที่เปิดอยู่ยังคงเปิดใน MT5)\n"
-        "/restart — 🔄 Restart บอท (ใช้ทุกครั้งหลัง git pull)\n"
+        "/restart — 🔄 Restart บอท (ไม่ดึงโค้ดใหม่)\n"
         "/help — รายการคำสั่งนี้\n\n"
         "🔁 โหมด Auto: บอทสแกน → ตัดสินใจ → ยิงออเดอร์เอง → รายงานที่นี่\n"
         "   เปิดไม้ใหม่เมื่อผ่านด่าน: SuperTrend/HalfTrend/UT Bot + แท่งเทียน/วอลุ่ม + Gemini + เกราะความเสี่ยง\n\n"
@@ -738,6 +739,29 @@ def main():
                         tg.send_text(token, chat, "▶️ กลับมาเปิดไม้อัตโนมัติแล้ว")
                     elif cmd == "closeall" and _ensure_connected(cfg):
                         _close_all(token, chat)
+                    elif cmd == "update":
+                        # git pull จากภายในบอท → restart → โค้ดใหม่โหลดทันที ไม่ต้อง SSH
+                        import subprocess
+                        tg.send_text(token, chat, "⬇️ กำลัง git pull จาก GitHub ...")
+                        try:
+                            _repo = os.path.dirname(os.path.abspath(__file__))
+                            _res = subprocess.run(
+                                ["git", "-C", _repo, "pull", "--ff-only"],
+                                capture_output=True, text=True, timeout=30,
+                            )
+                            _out = (_res.stdout or "").strip() or "(ไม่มี output)"
+                            if _res.returncode == 0:
+                                tg.send_text(token, chat,
+                                             f"✅ git pull สำเร็จ\n{_out}\n\n🔄 กำลัง restart...")
+                            else:
+                                _err = (_res.stderr or "").strip()
+                                tg.send_text(token, chat,
+                                             f"⚠️ git pull มีปัญหา:\n{_err}\n\n🔄 Restart ด้วยโค้ดเดิม")
+                        except Exception as _e:
+                            tg.send_text(token, chat,
+                                         f"❌ git pull ล้มเหลว: {_e}\n🔄 Restart ด้วยโค้ดเดิม")
+                        time.sleep(2)
+                        sys.exit(0)   # wrapper (start_loop.bat / start_bot.sh) restart อัตโนมัติ
                     elif cmd == "stop":
                         # ลบ flag → start_loop.bat ตรวจเจอ "ไม่มี flag" → goto end → ไม่ restart
                         tg.send_text(token, chat,
