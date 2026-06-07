@@ -34,6 +34,47 @@ log = logging.getLogger("part2.interactive")
 
 TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
+# ── ชื่อเทคนิคสำหรับแสดงใน Telegram ────────────────────────────────
+_SRC_MAP = {
+    "supertrend": "📈 SuperTrend",
+    "halftrend":  "〰️ HalfTrend",
+    "utbot":      "🤖 UT Bot",
+    "hybrid":     "🔀 Hybrid-Pro",
+    "scalp":      "⚡ EMA+Stoch",
+    "fx_orb":     "🌅 FX ORB",
+}
+_TRADE_META = os.path.join(os.path.dirname(__file__), "part2_trade_meta.json")
+_TRADE_META_MAX = 500   # เก็บแค่ N รายการล่าสุด (กันไฟล์ใหญ่เกิน)
+
+
+def _save_trade_src(ticket: int, source: str) -> None:
+    """บันทึก ticket → source เพื่อแสดงชื่อเทคนิคตอนปิดไม้"""
+    try:
+        data: dict = {}
+        if os.path.exists(_TRADE_META):
+            with open(_TRADE_META, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        data[str(ticket)] = source
+        # ตัดรายการเก่าออกถ้าเกิน limit
+        if len(data) > _TRADE_META_MAX:
+            keys = list(data.keys())
+            data = {k: data[k] for k in keys[-_TRADE_META_MAX:]}
+        with open(_TRADE_META, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:  # noqa: BLE001
+        log.warning("save trade meta failed: %s", e)
+
+
+def _load_trade_src() -> dict:
+    """โหลด {ticket_str → source} — ใช้หาชื่อเทคนิคตอนรายงานปิดไม้"""
+    try:
+        if os.path.exists(_TRADE_META):
+            with open(_TRADE_META, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
 
 def _ensure_connected(cfg) -> bool:
     import MetaTrader5 as m5
@@ -313,6 +354,7 @@ def _do_open(cfg, token, chat, p, execute_on: bool) -> None:
     res = execute.place_order(t["exsym"], t["direction"], sz["lots"], t["sl"], t["tp"])
     if res.get("ok"):
         learn.record_entry(res.get("ticket"), t)   # เก็บฟีเจอร์ไว้เรียนรู้ภายหลัง
+        _save_trade_src(res["ticket"], (t.get("bias") or {}).get("source", ""))  # บันทึก ticket→technique
         tg.edit_text(token, chat, p["msg_id"], _summary(t) +
                      f"\n\n✅ เปิดออเดอร์แล้ว! #{res.get('ticket')} @ {res.get('price')}"
                      f"\nLot {sz['lots']} · SL/TP ตั้งให้แล้ว — MT5 จะปิดเองที่ TP/SL")
@@ -420,6 +462,11 @@ def _open_report(t: dict, res: "dict | None") -> str:
 
     head = "🤖 เปิดออเดอร์อัตโนมัติ" if res else "🧪 (ทดสอบ) บอทจะเปิด"
     lines = [f"{head} — {t['exsym']} {dir_th}"]
+    # ชื่อเทคนิคที่ใช้เปิดไม้ (tag มี TF ครบ เช่น "SuperTrend H1 (×3.0)")
+    _b0 = t.get("bias") or {}
+    _tag = (_b0.get("scalp") or {}).get("tag") or _SRC_MAP.get(_b0.get("source", ""), "")
+    if _tag:
+        lines.append(f"⚙️ {_tag}")
     if res and res.get("ticket"):
         lines.append(f"#{res['ticket']} @ {fx(res.get('price'))}")
     lines.append(f"🎯 Entry {fx(t['spot'])} · 🛡️ SL {fx(t['sl'])} · 🎯 TP {fx(t['tp'])}"
@@ -463,6 +510,7 @@ def _auto_open(cfg, token, chat, t, execute_on: bool) -> bool:
     res = execute.place_order(t["exsym"], t["direction"], sz["lots"], t["sl"], t["tp"])
     if res.get("ok"):
         learn.record_entry(res.get("ticket"), t)   # เก็บฟีเจอร์ไว้เรียนรู้ภายหลัง
+        _save_trade_src(res["ticket"], (t.get("bias") or {}).get("source", ""))  # บันทึก ticket→technique
         tg.send_text(token, chat, _open_report(t, res))
         log.info("AUTO เปิด %s %s lot %s → #%s", t["exsym"], t["direction"], sz["lots"], res.get("ticket"))
         return True
@@ -712,13 +760,18 @@ def main():
             # 2.6) journal ไม้ที่ปิด + รายงานทุกไม้ที่เพิ่งปิด + เรียนรู้ (ทุก ~60 วิ)
             if now - last_journal > 60:
                 try:
+                    _meta = _load_trade_src()   # โหลดครั้งเดียวต่อรอบ journal
                     for d in journal.record_closed():
                         emo = "✅ กำไร" if d["profit"] >= 0 else "🔴 ขาดทุน"
                         pct = (f" = {d['profit'] / bal * 100:+.2f}% ของทุน ${bal:,.0f}"
                                if bal and bal > 0 else "")
                         day = journal.today_pnl()
+                        # หาชื่อเทคนิคจาก position_id → trade meta
+                        _src = _meta.get(str(d.get("position_id", "")), "")
+                        _src_label = _SRC_MAP.get(_src, "")
+                        src_line = f"\n⚙️ {_src_label}" if _src_label else ""
                         tg.send_text(token, chat,
-                                     f"{emo} · ปิดไม้ {d['symbol']} {d['volume']} lot\n"
+                                     f"{emo} · ปิดไม้ {d['symbol']} {d['volume']} lot{src_line}\n"
                                      f"💰 P/L ${d['profit']:+.2f}{pct}\n"
                                      f"📊 รวมวันนี้ ${day:+.2f}")
                     learn.attach_outcomes()   # จับคู่ผลลัพธ์เข้าฟีเจอร์ (closed-loop เรียนรู้)

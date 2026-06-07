@@ -46,7 +46,8 @@ def record_closed(days_back: int = 7) -> list:
         if d.magic != _MAGIC or d.entry != m5.DEAL_ENTRY_OUT or d.ticket in seen:
             continue
         entry = {"deal_id": d.ticket, "symbol": d.symbol, "time": d.time,
-                 "profit": round(d.profit + d.commission + d.swap, 2), "volume": d.volume}
+                 "profit": round(d.profit + d.commission + d.swap, 2), "volume": d.volume,
+                 "position_id": d.position_id}   # ใช้ lookup ชื่อเทคนิคจาก part2_trade_meta.json
         j.append(entry)
         new.append(entry)
     if new:
