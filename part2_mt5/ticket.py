@@ -15,6 +15,7 @@ import patterns
 import risk
 import gemini_gate
 import learn
+import scalp as _scalp_module   # ใช้ vpoc() — import ที่ module level เพื่อกัน shadowing กับ param scalp
 
 log = logging.getLogger("part2.ticket")
 
@@ -145,6 +146,36 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
             rr_s = float(scalp.get("rr", 1.8))
             tp = spot + rr_s * rd if direction == "buy" else spot - rr_s * rd
         tbp = brt = ibb = tlp = {"detected": False}
+
+    # ── VPOC Filter + TP Zone ─────────────────────────────────────────────────
+    # scalp trades ข้าม — ใช้ SL/TP ของกลยุทธ์เองแล้ว
+    # Filter : ราคาใกล้ VPOC < VPOC_FILTER_ATR×ATR → ตลาดสมดุล ยังไม่มีทิศ → ลด lot
+    # TP Zone: VPOC อยู่ข้างหน้า ≥ VPOC_MIN_RR×R → ใช้เป็น TP แทน fixed R:R
+    vpoc_info: dict = {}
+    near_vpoc: bool = False
+    vpoc_tp_used: bool = False
+    if not scalp and cfg.get("USE_VPOC", "true").lower() in ("1", "true", "yes", "on"):
+        _vpoc_tf   = cfg.get("VPOC_TF", "M5")
+        _vpoc_bars = int(cfg.get("VPOC_BARS", "288"))    # 288×M5 = 24h ครอบทุก session
+        _df_vp = mt5.rates(exsym, _vpoc_tf, _vpoc_bars)
+        if _df_vp is not None and len(_df_vp) >= 50:
+            _vp = _scalp_module.vpoc(_df_vp)
+            if _vp:
+                vpoc_info = _vp
+                _dist_atr = abs(spot - _vp["vpoc"]) / atr if atr > 0 else 99.0
+                near_vpoc = _dist_atr < float(cfg.get("VPOC_FILTER_ATR", "0.5"))
+                # TP Zone — VPOC ต้องอยู่ข้างหน้าในทิศที่เทรด และ R:R คุ้มค่า
+                _vpoc_ahead = (_vp["vpoc"] > spot) if direction == "buy" else (_vp["vpoc"] < spot)
+                if _vpoc_ahead:
+                    _sl_dist   = abs(spot - sl)
+                    _vpoc_dist = abs(_vp["vpoc"] - spot)
+                    _vpoc_rr   = _vpoc_dist / _sl_dist if _sl_dist > 0 else 0.0
+                    if _vpoc_rr >= float(cfg.get("VPOC_MIN_RR", "1.5")):
+                        tp = _vp["vpoc"]          # override TP = VPOC (volume magnet)
+                        vpoc_tp_used = True
+                        log.info("VPOC TP %s %s → %.5f (R:R %.2f · VAH=%.5f VAL=%.5f)",
+                                 exsym, direction, tp, _vpoc_rr, _vp["vah"], _vp["val"])
+
     rr_val = risk.rr(spot, sl, tp)
 
     # เกราะ spread: ข้ามถ้า spread กว้างเกิน (เทรดสั้น spread กว้าง = กินกำไร)
@@ -175,6 +206,16 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     risk_pct = float(cfg.get("RISK_PCT_PER_TRADE", "1.0"))
     sizing = mt5.lots_for_risk(exsym, used_bal, risk_pct, spot, sl)
 
+    # VPOC Filter: ลด lot เมื่ออยู่ใน equilibrium zone (ราคาใกล้ VPOC — ยังไม่มีทิศชัด)
+    if near_vpoc and sizing and sizing.get("lots", 0) > 0:
+        _vp_reduce = float(cfg.get("VPOC_LOT_REDUCE", "0.4"))
+        _sz_vp = mt5.lots_for_risk(exsym, used_bal, risk_pct * _vp_reduce, spot, sl)
+        if _sz_vp and _sz_vp.get("lots", 0) > 0:
+            sizing = _sz_vp
+            log.info("VPOC Filter: ลด lot → %.2f lots (ใกล้ VPOC %.5f ห่าง %.2f×ATR)",
+                     _sz_vp["lots"], vpoc_info["vpoc"],
+                     abs(spot - vpoc_info["vpoc"]) / atr if atr > 0 else 0)
+
     # เกราะความเสี่ยง: ข้ามไม้ที่ความเสี่ยงจริง (หลังปัด lot ขั้นต่ำ) เกินเพดาน
     # (เคสพอร์ตเล็ก + SL กว้าง เช่นทองบนพอร์ต $500 → lot ขั้นต่ำเสี่ยงทะลุเป้า)
     max_risk_pct = float(cfg.get("MAX_RISK_PCT", "2.0"))
@@ -199,6 +240,8 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         "inside_bar_breakout": ibb.get("detected"), "two_leg_pullback": tlp.get("detected"),
         "near_resistance": sr.get("near_resistance"), "near_support": sr.get("near_support"),
         "structure": struct.get("label"), "risk_gate_ok": gate["ok"], "risk_gate_reasons": gate["reasons"],
+        "vpoc": round(vpoc_info["vpoc"], 5) if vpoc_info else None,
+        "near_vpoc": near_vpoc, "vpoc_tp_used": vpoc_tp_used,
     }
     memory = learn.summary_for_ai(int(cfg.get("LEARN_MIN_SAMPLES", "10")))   # บทเรียนจากผลจริง
     verdict = gemini_gate.assess(ctx, cfg.get("GEMINI_API_KEY"), memory)
@@ -219,7 +262,8 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
             "ibb": ibb, "tlp": tlp, "sr": sr, "scalp": scalp.get("tag") if scalp else None,
             "sizing": sizing, "gate": gate, "verdict": verdict, "used_balance": used_bal,
             "balance_is_test": bal <= 0, "reduced": reduced,
-            "rsi_tf": round(rsi_tf, 1)}   # RSI จาก entry-TF จริง (M15/H1)
+            "rsi_tf": round(rsi_tf, 1),    # RSI จาก entry-TF จริง (M15/H1)
+            "vpoc_info": vpoc_info, "near_vpoc": near_vpoc, "vpoc_tp_used": vpoc_tp_used}
 
 
 def format_ticket(t: dict) -> str:
@@ -272,6 +316,11 @@ def format_ticket(t: dict) -> str:
         lines.append(f"🛡️ SL: {fx(t['sl'])}   🎯 TP: {fx(t['tp'])}   R:R {t['rr']:.2f}")
     else:
         lines.append(f"🛡️ SL: {fx(t['sl'])}")
+    _vpi = t.get("vpoc_info") or {}
+    if t.get("vpoc_tp_used") and _vpi:
+        lines.append(f"🧲 VPOC TP {fx(_vpi['vpoc'])} · VAH {fx(_vpi['vah'])} · VAL {fx(_vpi['val'])}")
+    elif t.get("near_vpoc") and _vpi:
+        lines.append(f"⚠️ ใกล้ VPOC {fx(_vpi['vpoc'])} — ลด lot อัตโนมัติ (ตลาดยังสมดุล)")
     if t["sizing"]:
         sz = t["sizing"]
         baltxt = f"${t['used_balance']:,.0f}" + ("(ทดสอบ)" if t["balance_is_test"] else "")

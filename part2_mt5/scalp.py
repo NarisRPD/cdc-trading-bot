@@ -472,6 +472,88 @@ def utbot_signal(df, key_value: float = 1.0, atr_period: int = 10,
             "reason": f"UT Bot crossover {flip_bar} แท่งที่แล้ว → {direction.upper()} (TS={round(ts_val, 4)})"}
 
 
+def vpoc(df, bin_atr_mult: float = 0.03) -> dict:
+    """
+    Volume Profile จาก OHLCV DataFrame → หา VPOC + Value Area (VAH/VAL)
+
+    ใช้ tick_volume เป็น proxy ของ real volume (Forex/CFD บน Exness) — correlation ~90%
+    bin_atr_mult: ขนาด bin = ATR × mult — auto-scale ตาม instrument
+                  (ทอง ~$0.5 · Crypto ~$50 · FX ~0.0005)
+
+    คืน {vpoc, vah, val, total_vol, bin_size} หรือ {} ถ้าข้อมูลไม่พอ
+
+    VAH/VAL = Value Area ครอบ 70% ของ volume รอบ VPOC
+    → ราคาใน VAL–VAH = ตลาดสมดุล (ยังไม่มีทิศ) · นอก VAH/VAL = directional move
+    """
+    if df is None or len(df) < 20:
+        return {}
+
+    # ดึง volume column — MT5 ให้ tick_volume เป็น proxy ของ traded volume
+    vol_col = ("tick_volume" if "tick_volume" in df.columns
+               else "volume" if "volume" in df.columns else None)
+    if vol_col is None:
+        return {}
+
+    vols  = df[vol_col].to_numpy(dtype=float)
+    highs = df["high"].to_numpy(dtype=float)
+    lows  = df["low"].to_numpy(dtype=float)
+
+    atr_val = _atr(df, 14)
+    if atr_val <= 0:
+        return {}
+    bin_size = atr_val * bin_atr_mult
+    if bin_size <= 0:
+        return {}
+
+    min_price = float(lows.min())
+    max_price = float(highs.max())
+    n_bins = max(1, int((max_price - min_price) / bin_size) + 2)
+
+    # กระจาย volume ของแต่ละแท่งอย่างสม่ำเสมอตาม price range (low→high)
+    bins = np.zeros(n_bins, dtype=float)
+    for i in range(len(df)):
+        lo_b = max(0, int((lows[i]  - min_price) / bin_size))
+        hi_b = min(n_bins - 1, int((highs[i] - min_price) / bin_size))
+        n_span   = max(1, hi_b - lo_b + 1)
+        vol_per  = vols[i] / n_span
+        bins[lo_b : hi_b + 1] += vol_per
+
+    total_vol = float(bins.sum())
+    if total_vol <= 0:
+        return {}
+
+    # VPOC = bin ที่มี volume สูงสุด (Point of Control)
+    vpoc_bin   = int(np.argmax(bins))
+    vpoc_price = min_price + (vpoc_bin + 0.5) * bin_size
+
+    # Value Area: ขยายจาก VPOC ออกทั้งสองทาง จนครอบ 70% ของ total volume
+    # (ตามหลัก Market Profile — Chicago Board of Trade)
+    va_target = total_vol * 0.70
+    lo_va, hi_va = vpoc_bin, vpoc_bin
+    va_vol = float(bins[vpoc_bin])
+
+    while va_vol < va_target:
+        lo_ext = float(bins[lo_va - 1]) if lo_va > 0         else 0.0
+        hi_ext = float(bins[hi_va + 1]) if hi_va < n_bins - 1 else 0.0
+        if lo_ext == 0.0 and hi_ext == 0.0:
+            break
+        # extend ฝั่งที่ volume มากกว่า (Market Profile convention)
+        if lo_ext >= hi_ext and lo_va > 0:
+            lo_va -= 1;  va_vol += lo_ext
+        elif hi_va < n_bins - 1:
+            hi_va += 1;  va_vol += hi_ext
+        else:
+            break
+
+    return {
+        "vpoc":      round(vpoc_price,                          8),
+        "vah":       round(min_price + (hi_va + 1) * bin_size, 8),
+        "val":       round(min_price + lo_va * bin_size,        8),
+        "total_vol": int(total_vol),
+        "bin_size":  round(bin_size, 8),
+    }
+
+
 def _rsi(s, n: int = 14):
     d = s.astype(float).diff()
     up = d.clip(lower=0).rolling(n).mean()
