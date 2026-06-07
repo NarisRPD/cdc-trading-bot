@@ -16,6 +16,9 @@ def load(path: str = "config.env") -> dict:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
+                # ตัด inline comment เช่น  KEY=180  # หมายเหตุ  → เก็บแค่ 180
+                if " #" in v:
+                    v = v[: v.index(" #")]
                 cfg[k.strip()] = v.strip()
     for k in list(cfg):           # env override (เผื่อ set ชั่วคราว)
         if os.getenv(k):
