@@ -811,6 +811,7 @@ def main():
     _exc_streak = 0        # นับ loop error ซ้ำต่อเนื่อง — alert Telegram เมื่อซ้ำมาก
     _in_blackout = False   # สถานะ blackout ปัจจุบัน — แจ้ง Telegram แค่ครั้งแรกที่เข้า/ออก
     last_heartbeat = 0.0   # timestamp ส่ง heartbeat ล่าสุด
+    _pos_full = False      # สถานะไม้เต็มรอบก่อน — แจ้ง Telegram เมื่อเต็ม/ว่างครั้งแรก
 
     while True:
         try:
@@ -995,6 +996,20 @@ def main():
 
             # 3) หาโอกาสใหม่ (ถ้าไม่ halt · ไม่ pause · ไม่ใช่ช่วงข่าวแรง)
             open_n = _count_open() if auto_on else 0
+            _now_full = auto_on and open_n >= max_pos
+
+            # ── ตรวจการเปลี่ยนสถานะ "ไม้เต็ม ↔ ไม้ว่าง" ─────────────────────────
+            # แจ้งแค่ตอน transition ไม่แจ้งซ้ำทุกรอบ
+            if _now_full and not _pos_full:
+                tg.send_text(token, chat,
+                             f"📊 ไม้เต็มแล้ว ({open_n}/{max_pos}) — หยุดสแกนชั่วคราว รอไม้ปิด")
+                log.info("ไม้เต็ม %d/%d → หยุดสแกน", open_n, max_pos)
+            elif _pos_full and not _now_full:
+                tg.send_text(token, chat,
+                             f"🔓 ไม้ว่างแล้ว ({open_n}/{max_pos}) — กลับมาสแกน")
+                log.info("ไม้ว่าง %d/%d → กลับมาสแกน", open_n, max_pos)
+            _pos_full = _now_full
+
             if auto_on and open_n < prev_open:        # มีไม้เพิ่งปิด (TP/SL) → สแกนหาตัวใหม่ทันที
                 last_scan = 0.0
                 queue.clear()   # ล้าง queue เก่า — สัญญาณอาจ stale หลังจากไม้ปิด
