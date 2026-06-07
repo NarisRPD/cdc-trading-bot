@@ -58,8 +58,8 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # ชั้น 1 — bias.rsi จาก CDC scan (TF สูง เช่น D1)
     # ชั้น 2 — คำนวณ RSI จาก entry-TF จริง (H1) เพื่ออุดช่องโหว่กรณี CDC ใช้ TF ต่าง
     # → กันขายก้นเหว (sell ตอน oversold) / ซื้อยอดดอย (buy ตอน overbought)
-    rsi_ovs = float(cfg.get("RSI_OVERSOLD", "25"))
-    rsi_obt = float(cfg.get("RSI_OVERBOUGHT", "75"))
+    rsi_ovs = float(cfg.get("RSI_OVERSOLD", "30"))   # default 30 — block sell ตอน oversold
+    rsi_obt = float(cfg.get("RSI_OVERBOUGHT", "70")) # default 70 — block buy ตอน overbought
 
     rsi = bias.get("rsi")
     if isinstance(rsi, (int, float)):
