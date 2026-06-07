@@ -16,11 +16,7 @@ import logging
 import os
 import sys
 import time
-import warnings
 from datetime import datetime, timezone
-
-# ปิด DeprecationWarning จาก datetime.utcnow() ใน Python 3.12+
-warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*utcnow.*")
 
 from _config import load
 import mt5_client as m
@@ -80,7 +76,7 @@ def _scan_scalp(cfg, broker: set) -> list:
     import market_hours
     import pandas as pd
     rr = float(cfg.get("SCALP_RR", "1.8"))
-    wk = (datetime.utcnow().weekday() >= 5 and
+    wk = (datetime.now(timezone.utc).weekday() >= 5 and
           cfg.get("SCALP_WEEKEND_LOOSEN", "true").lower() in ("1", "true", "yes", "on"))
     os_lvl, ob_lvl = (30.0, 70.0) if wk else (20.0, 80.0)   # เสาร์-อาทิตย์: ผ่อน Stoch ให้ไวขึ้น
     out = []
@@ -91,8 +87,9 @@ def _scan_scalp(cfg, broker: set) -> list:
         if df is None or len(df) < 210 or "time" not in df.columns:
             continue
         try:                                             # ไม่มีแท่ง M15 ใหม่ = ตลาดปิด → ข้าม
-            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime()
-            if (datetime.utcnow() - last_t).total_seconds() / 60.0 > 45:
+            # แปลง last_t ให้เป็น aware datetime (UTC) เพื่อเทียบกับ now(timezone.utc) ได้ถูกต้อง
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > 45:
                 continue
         except Exception:  # noqa: BLE001
             pass
@@ -110,7 +107,7 @@ def _scan_scalp(cfg, broker: set) -> list:
 def _scan_fx_orb(cfg, broker: set) -> list:
     """สแกน Asian-London ORB เฉพาะคู่เงิน (รันเฉพาะหน้าต่าง London 07-11 UTC) → [(bias, None)]
     TP/SL สัมบูรณ์ของกลยุทธ์ (TP=ความกว้างกรอบ · SL=กึ่งกลาง) ส่งผ่าน bias.scalp"""
-    if not (7 <= datetime.utcnow().hour < 11):           # นอกหน้าต่าง London → ไม่ต้องสแกน
+    if not (7 <= datetime.now(timezone.utc).hour < 11):   # นอกหน้าต่าง London → ไม่ต้องสแกน
         return []
     import scalp as _scalp
     import market_hours
@@ -139,7 +136,7 @@ def _scan_hybrid(cfg, broker: set) -> list:
     import market_hours
     import pandas as pd
     rr = float(cfg.get("HYBRID_RR", "2.5"))
-    wk = (datetime.utcnow().weekday() >= 5 and
+    wk = (datetime.now(timezone.utc).weekday() >= 5 and
           cfg.get("SCALP_WEEKEND_LOOSEN", "true").lower() in ("1", "true", "yes", "on"))
     rlo, rhi = (35.0, 65.0) if wk else (40.0, 60.0)        # เสาร์-อาทิตย์: ผ่อน RSI band ให้ไวขึ้น
     out = []
@@ -150,8 +147,9 @@ def _scan_hybrid(cfg, broker: set) -> list:
         if df is None or len(df) < 850 or "time" not in df.columns:
             continue
         try:
-            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime()
-            if (datetime.utcnow() - last_t).total_seconds() / 60.0 > 45:
+            # แปลง last_t ให้เป็น aware datetime (UTC) เพื่อเทียบกับ now(timezone.utc) ได้ถูกต้อง
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > 45:
                 continue
         except Exception:  # noqa: BLE001
             pass
