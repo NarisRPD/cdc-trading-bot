@@ -16,7 +16,11 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+import warnings
+from datetime import datetime, timezone
+
+# ปิด DeprecationWarning จาก datetime.utcnow() ใน Python 3.12+
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*utcnow.*")
 
 from _config import load
 import mt5_client as m
