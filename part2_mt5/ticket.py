@@ -11,6 +11,7 @@ import logging
 from typing import Optional
 
 import candles
+import market_hours
 import patterns
 import risk
 import gemini_gate
@@ -193,11 +194,16 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     rr_val = risk.rr(spot, sl, tp)
 
     # เกราะ spread: ข้ามถ้า spread กว้างเกิน (เทรดสั้น spread กว้าง = กินกำไร)
+    # crypto spread กว้างกว่า FX/commodity ตามธรรมชาติ → ใช้ threshold แยก asset class
     spread = (px["ask"] - px["bid"]) if (px and px.get("ask") and px.get("bid")) else 0.0
     spread_pct = (spread / spot * 100) if spot else 0.0
-    max_spread = float(cfg.get("MAX_SPREAD_PCT", "0.15"))
+    _sym_cat = market_hours.category(exsym)
+    if _sym_cat == "crypto":
+        max_spread = float(cfg.get("MAX_SPREAD_PCT_CRYPTO", "1.0"))
+    else:
+        max_spread = float(cfg.get("MAX_SPREAD_PCT", "0.15"))
     if spread_pct > max_spread:
-        log.info("ข้าม %s — spread กว้าง %.3f%% > %.2f%%", exsym, spread_pct, max_spread)
+        log.info("ข้าม %s — spread กว้าง %.3f%% > %.2f%% (%s)", exsym, spread_pct, max_spread, _sym_cat)
         return {"skipped": True, "exsym": exsym, "direction": direction,
                 "reason": f"spread {spread_pct:.2f}% > {max_spread}%"}
     # หัก spread + ค่าคอม (ต่อรอบ) ออกจาก R:R → R:R สมจริง
