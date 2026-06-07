@@ -1,0 +1,15 @@
+# yfinance 1.x จำเป็น (0.2.x ใช้ไม่ได้แล้ว — Yahoo เปลี่ยน API ต้องใช้ crumb/cookie)
+# curl_cffi ให้ yfinance ปลอมเป็นเบราว์เซอร์ผ่าน TLS fingerprint ของ Yahoo
+# yfinance 1.x ต้องการ pandas 3.x + numpy 2.4.x
+pandas==3.0.3
+numpy==2.4.6
+yfinance==1.4.1
+curl_cffi==0.15.0
+ccxt==4.4.50
+requests==2.32.3
+pandas-datareader==0.10.0
+lxml==5.3.0
+# watchlist bot (Cloud Run Service)
+flask==3.1.0
+gunicorn==23.0.0
+google-cloud-storage==2.19.0

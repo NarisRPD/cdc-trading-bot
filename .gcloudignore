@@ -1,0 +1,20 @@
+# กันไฟล์ที่ไม่จำเป็นไม่ให้ถูกอัปไป Cloud Build
+# (ถ้าไม่มีไฟล์นี้ gcloud จะอ้างอิง .gitignore แทน)
+.git
+.gitignore
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.log
+.env
+.env.*
+.idea
+.vscode
+.DS_Store
+*.md

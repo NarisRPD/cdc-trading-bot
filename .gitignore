@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.env
+.env.*
+config.env
+part2_mt5/config.env
+*.log
+.idea/
+.vscode/
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Part 2 runtime (บอทสร้างเอง — ไม่ต้องเก็บใน git)
+part2_mt5/part2_trades.json
+part2_mt5/part2_journal.json
+part2_mt5/part2_state.json
+part2_mt5/learn_*.json
+part2_mt5/*.lock
+part2_mt5/*.flag
+
+# caches / build artifact
+*_cache.json
+cdc-part2-vps.zip
