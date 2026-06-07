@@ -56,6 +56,8 @@ def set_commands(token: str) -> None:
         {"command": "pause", "description": "หยุดเปิดไม้ใหม่ชั่วคราว (auto)"},
         {"command": "resume", "description": "กลับมาเปิดไม้อัตโนมัติ"},
         {"command": "closeall", "description": "ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)"},
+        {"command": "stop",     "description": "หยุดบอท (ไม้เปิดอยู่ยังคงเปิดใน MT5)"},
+        {"command": "restart",  "description": "Restart บอท — ใช้ทุกครั้งที่อัปเดตโค้ด"},
         {"command": "help", "description": "รายการคำสั่งทั้งหมด"},
     ]
     _call(token, "setMyCommands", timeout=10, commands=cmds)

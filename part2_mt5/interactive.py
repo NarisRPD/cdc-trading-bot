@@ -388,6 +388,8 @@ def _help_text() -> str:
         "/pause — ⏸️ หยุดเปิดไม้ใหม่ชั่วคราว (ไม้เก่ายังจัดการต่อ)\n"
         "/resume — ▶️ กลับมาเปิดไม้อัตโนมัติ\n"
         "/closeall — 🧹 ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)\n"
+        "/stop — 🛑 หยุดบอท (ไม้ที่เปิดอยู่ยังคงเปิดใน MT5)\n"
+        "/restart — 🔄 Restart บอท (ใช้ทุกครั้งหลัง git pull)\n"
         "/help — รายการคำสั่งนี้\n\n"
         "🔁 โหมด Auto: บอทสแกน → ตัดสินใจ → ยิงออเดอร์เอง → รายงานที่นี่\n"
         "   เปิดไม้ใหม่เมื่อผ่านด่าน: SuperTrend/HalfTrend/UT Bot + แท่งเทียน/วอลุ่ม + Gemini + เกราะความเสี่ยง\n\n"
@@ -716,6 +718,23 @@ def main():
                         tg.send_text(token, chat, "▶️ กลับมาเปิดไม้อัตโนมัติแล้ว")
                     elif cmd == "closeall" and _ensure_connected(cfg):
                         _close_all(token, chat)
+                    elif cmd == "stop":
+                        # ลบ flag → start_loop.bat ตรวจเจอ "ไม่มี flag" → goto end → ไม่ restart
+                        tg.send_text(token, chat,
+                                     "🛑 หยุดบอทแล้ว\n"
+                                     "ไม้ที่เปิดอยู่ยังคงเปิดต่อใน MT5 ✅\n"
+                                     "Restart: รัน start_loop.bat หรือพิมพ์ /restart ใน Telegram")
+                        if os.path.exists(_SHOULD_RUN):
+                            os.remove(_SHOULD_RUN)
+                        time.sleep(2)       # รอให้ message ส่งก่อน exit
+                        sys.exit(0)
+                    elif cmd == "restart":
+                        # ไม่ลบ flag → start_loop.bat ตรวจเจอ flag ยังอยู่ → restart อัตโนมัติใน ~15 วิ
+                        tg.send_text(token, chat,
+                                     "🔄 กำลัง restart บอท...\n"
+                                     "รอ ~15 วิ บอทจะกลับมาและแจ้ง Telegram ✅")
+                        time.sleep(2)       # รอให้ message ส่งก่อน exit
+                        sys.exit(0)
 
             # 2) หมดเวลา → ลบใบ
             if pending and now - pending["sent_at"] > ttl:
