@@ -235,7 +235,8 @@ def format_ticket(t: dict) -> str:
              f"ทิศ: {_DIR_TH.get(t['direction'], t['direction'])}   [AI: {_DECISION_TH.get(d, d)}"
              + (f" {v['confidence']}%" if v.get("confidence") is not None else "") + "]"]
     # แหล่งสัญญาณ (SuperTrend / Hybrid-Pro / EMA+Stoch / FX ORB)
-    _src_map = {"supertrend": "📈 SuperTrend", "hybrid": "🔀 Hybrid-Pro",
+    _src_map = {"supertrend": "📈 SuperTrend", "halftrend": "〰️ HalfTrend",
+                "utbot": "🤖 UT Bot", "hybrid": "🔀 Hybrid-Pro",
                 "scalp": "⚡ EMA+Stoch", "fx_orb": "🌅 FX ORB"}
     src = b.get("source", "")
     src_txt = _src_map.get(src, f"📊 {src}" if src else "📊 สัญญาณ")

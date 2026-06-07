@@ -283,6 +283,195 @@ def supertrend_signal(df, period: int = 10, mult: float = 3.0,
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# #2  HalfTrend — smooth ATR-based trend, ลด whipsaw ดีกว่า SuperTrend
+#     ในตลาดผันผวนช่วงสั้น เพราะติดตาม swing high/low แบบ ratchet + EMA smooth
+# ─────────────────────────────────────────────────────────────────────────────
+
+def halftrend(df, amplitude: int = 2, channel_dev: float = 2.0) -> dict:
+    """HalfTrend indicator — ติดตาม swing high/low ด้วย EMA smooth
+    amplitude: ATR period สำหรับ dev band (default 2)
+    channel_dev: ATR multiplier ของ channel (default 2.0)
+    คืน dict: {ht, direction (+1=buy/-1=sell), flipped}"""
+    n = len(df)
+    if n < max(amplitude * 3, 20):
+        return {"ht": None}
+    h = df["high"].astype(float).values
+    l = df["low"].astype(float).values
+    c = df["close"].astype(float).values
+    hl2 = (h + l) / 2.0
+
+    # ATR (True Range series)
+    pc = np.roll(c, 1); pc[0] = c[0]
+    tr = np.maximum(h - l, np.maximum(np.abs(h - pc), np.abs(l - pc)))
+    atr_arr = np.zeros(n)
+    ap = max(amplitude, 1)
+    for i in range(ap - 1, n):
+        atr_arr[i] = tr[max(0, i - ap + 1):i + 1].mean()
+    atr_arr[:ap - 1] = atr_arr[ap - 1] if n > ap else 0.001
+
+    # EMA smooth ของ high/low (span=2 → alpha=2/3 ตอบสนองเร็วแต่ไม่ noisy)
+    alpha = 2.0 / 3.0
+    eh, el = h.copy().astype(float), l.copy().astype(float)
+    for i in range(1, n):
+        eh[i] = alpha * h[i] + (1 - alpha) * eh[i - 1]
+        el[i] = alpha * l[i] + (1 - alpha) * el[i - 1]
+
+    # state machine: ติดตาม max_low (uptrend) / min_high (downtrend)
+    trend = np.zeros(n, dtype=int)         # 0=up, 1=down
+    nxt   = np.zeros(n, dtype=int)         # nextTrend
+    max_lo = hl2.copy()
+    min_hi = hl2.copy()
+    ht = hl2.copy()
+    dr = np.ones(n, dtype=int)             # +1=buy, -1=sell
+
+    for i in range(1, n):
+        if nxt[i - 1] == 1:               # กำลังมองหา downtrend
+            max_lo[i] = max(l[i], max_lo[i - 1])
+            if eh[i] < max_lo[i] and c[i] < l[i - 1]:
+                trend[i] = 1;  nxt[i] = 0;  min_hi[i] = h[i]
+            else:
+                trend[i] = trend[i - 1];  nxt[i] = nxt[i - 1]
+                min_hi[i] = min_hi[i - 1]
+        else:                              # กำลังมองหา uptrend
+            min_hi[i] = min(h[i], min_hi[i - 1])
+            if el[i] > min_hi[i] and c[i] > h[i - 1]:
+                trend[i] = 0;  nxt[i] = 1;  max_lo[i] = l[i]
+            else:
+                trend[i] = trend[i - 1];  nxt[i] = nxt[i - 1]
+                max_lo[i] = max_lo[i - 1]
+
+        if trend[i] == 0:                  # uptrend: ht ขยับขึ้นตาม max_low
+            ht[i] = max(ht[i - 1], max_lo[i])
+            dr[i] = 1
+        else:                              # downtrend: ht ขยับลงตาม min_high
+            ht[i] = min(ht[i - 1], min_hi[i])
+            dr[i] = -1
+
+    flipped = np.zeros(n, dtype=bool)
+    flipped[1:] = dr[1:] != dr[:-1]
+    upper_ch = ht - atr_arr * channel_dev  # channel ด้านล่าง (แนวรับ)
+    lower_ch = ht + atr_arr * channel_dev  # channel ด้านบน (แนวต้าน)
+    return {"ht": ht, "direction": dr, "flipped": flipped,
+            "upper_ch": upper_ch, "lower_ch": lower_ch}
+
+
+def halftrend_signal(df, amplitude: int = 2, channel_dev: float = 2.0,
+                     fresh_bars: int = 3, sl_atr_mult: float = 0.3) -> dict:
+    """สัญญาณ HalfTrend — ตรวจ flip ล่าสุด, SL อิง HalfTrend line + ATR buffer"""
+    if df is None or len(df) < max(amplitude * 3, 20) + 5:
+        return {"detected": False}
+    res = halftrend(df, amplitude, channel_dev)
+    if res.get("ht") is None:
+        return {"detected": False}
+
+    dr_arr, flip_arr, ht_arr = res["direction"], res["flipped"], res["ht"]
+    flip_bar = 0
+    for i in range(1, min(fresh_bars + 1, len(flip_arr) + 1)):
+        if flip_arr[-i]:
+            flip_bar = i; break
+    if not flip_bar:
+        return {"detected": False}
+
+    direction = "buy" if int(dr_arr[-1]) == 1 else "sell"
+    c = float(df["close"].iloc[-1])
+    ht_val = float(ht_arr[-1])
+    atr_val = _atr(df)
+
+    if direction == "buy":
+        sl = round(ht_val - sl_atr_mult * atr_val, 5)
+        if sl >= c: return {"detected": False}
+    else:
+        sl = round(ht_val + sl_atr_mult * atr_val, 5)
+        if sl <= c: return {"detected": False}
+
+    return {"detected": True, "direction": direction, "entry": round(c, 5),
+            "sl": sl, "ht_value": round(ht_val, 5), "flip_bars_ago": flip_bar,
+            "reason": f"HalfTrend flip {flip_bar} แท่งที่แล้ว → {direction.upper()} (HT={round(ht_val, 4)})"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #3  UT Bot Alerts — ATR Trailing Stop + EMA crossover
+#     ยอดนิยม TradingView: ตอบสนองไว, Buy/Sell signal ชัดเจน ไม่ต้องตีความ
+# ─────────────────────────────────────────────────────────────────────────────
+
+def utbot(df, key_value: float = 1.0, atr_period: int = 10) -> dict:
+    """UT Bot Alerts indicator — ATR trailing stop แบบ adaptive
+    key_value: sensitivity (ต่ำ=ไว,สัญญาณเยอะ · สูง=ช้า,สัญญาณน้อย) ค่าแนะนำ 1-2
+    คืน dict: {ts (trailing stop), direction (+1=buy/-1=sell), flipped}"""
+    n = len(df)
+    if n < atr_period + 5:
+        return {"ts": None}
+    c = df["close"].astype(float).values
+    h = df["high"].astype(float).values
+    l = df["low"].astype(float).values
+
+    # ATR
+    pc = np.roll(c, 1); pc[0] = c[0]
+    tr = np.maximum(h - l, np.maximum(np.abs(h - pc), np.abs(l - pc)))
+    atr_arr = np.zeros(n)
+    for i in range(atr_period - 1, n):
+        atr_arr[i] = tr[max(0, i - atr_period + 1):i + 1].mean()
+    atr_arr[:atr_period - 1] = atr_arr[atr_period - 1]
+
+    nATR = atr_arr * key_value     # ATR ปรับด้วย key_value (sensitivity)
+
+    # Trailing Stop — ratchet ตาม direction (ขยับทิศเดียว)
+    ts = c.copy()
+    for i in range(1, n):
+        prev = ts[i - 1]
+        if c[i] > prev and c[i - 1] > prev:
+            ts[i] = max(prev, c[i] - nATR[i])    # ขาขึ้น: TS ขยับขึ้นเท่านั้น
+        elif c[i] < prev and c[i - 1] < prev:
+            ts[i] = min(prev, c[i] + nATR[i])    # ขาลง: TS ขยับลงเท่านั้น
+        elif c[i] > prev:
+            ts[i] = c[i] - nATR[i]               # ราคาเพิ่งข้ามขึ้น → reset TS
+        else:
+            ts[i] = c[i] + nATR[i]               # ราคาเพิ่งข้ามลง → reset TS
+
+    dr = np.where(c >= ts, 1, -1)                 # +1=ราคาอยู่เหนือ TS (buy zone)
+    flipped = np.zeros(n, dtype=bool)
+    flipped[1:] = dr[1:] != dr[:-1]              # แท่งที่ราคาตัดผ่าน TS
+
+    return {"ts": ts, "direction": dr, "flipped": flipped}
+
+
+def utbot_signal(df, key_value: float = 1.0, atr_period: int = 10,
+                 fresh_bars: int = 2, sl_atr_mult: float = 0.3) -> dict:
+    """สัญญาณ UT Bot — ตรวจราคาตัดผ่าน Trailing Stop ล่าสุด
+    fresh_bars: 2 (ไวกว่า SuperTrend/HalfTrend — เหมาะ M15/H1)
+    SL = Trailing Stop ± ATR buffer"""
+    if df is None or len(df) < atr_period + 10:
+        return {"detected": False}
+    res = utbot(df, key_value, atr_period)
+    if res.get("ts") is None:
+        return {"detected": False}
+
+    dr_arr, flip_arr, ts_arr = res["direction"], res["flipped"], res["ts"]
+    flip_bar = 0
+    for i in range(1, min(fresh_bars + 1, len(flip_arr) + 1)):
+        if flip_arr[-i]:
+            flip_bar = i; break
+    if not flip_bar:
+        return {"detected": False}
+
+    direction = "buy" if int(dr_arr[-1]) == 1 else "sell"
+    c = float(df["close"].iloc[-1])
+    ts_val = float(ts_arr[-1])
+    atr_val = _atr(df)
+
+    if direction == "buy":
+        sl = round(ts_val - sl_atr_mult * atr_val, 5)
+        if sl >= c: return {"detected": False}
+    else:
+        sl = round(ts_val + sl_atr_mult * atr_val, 5)
+        if sl <= c: return {"detected": False}
+
+    return {"detected": True, "direction": direction, "entry": round(c, 5),
+            "sl": sl, "ts_value": round(ts_val, 5), "flip_bars_ago": flip_bar,
+            "reason": f"UT Bot crossover {flip_bar} แท่งที่แล้ว → {direction.upper()} (TS={round(ts_val, 4)})"}
+
+
 def _rsi(s, n: int = 14):
     d = s.astype(float).diff()
     up = d.clip(lower=0).rolling(n).mean()

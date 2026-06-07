@@ -79,6 +79,76 @@ def _scan_supertrend(cfg, broker: set) -> list:
     return out
 
 
+def _scan_halftrend(cfg, broker: set) -> list:
+    """#2 HalfTrend — smooth ATR trend, ลด whipsaw ดีกว่า SuperTrend ในตลาดผันผวน"""
+    import scalp as _scalp
+    import market_hours
+    import pandas as pd
+    tf = cfg.get("HT_TF", "H1")
+    amp = int(cfg.get("HT_AMPLITUDE", "2"))
+    dev = float(cfg.get("HT_CHANNEL_DEV", "2.0"))
+    fresh = int(cfg.get("HT_FRESH_BARS", "3"))
+    rr = float(cfg.get("HT_RR", "2.0"))
+    stale_min = 90 if tf in ("H1", "H4") else 45
+    out = []
+    for sym in _watchlist(cfg, broker):
+        df = m.rates(sym, tf, 200)
+        if df is None or len(df) < 60 or "time" not in df.columns:
+            continue
+        try:
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _scalp.halftrend_signal(df, amplitude=amp, channel_dev=dev, fresh_bars=fresh)
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "source": "halftrend",
+                     "st_value": sig.get("ht_value"), "rsi": None,
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"HalfTrend {tf}"}}, None))
+    if out:
+        log.info("halftrend(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
+def _scan_utbot(cfg, broker: set) -> list:
+    """#3 UT Bot Alerts — ATR trailing stop crossover, ตอบสนองไว เหมาะ M15/H1"""
+    import scalp as _scalp
+    import market_hours
+    import pandas as pd
+    tf = cfg.get("UTB_TF", "M15")
+    kv = float(cfg.get("UTB_KEY_VALUE", "1.0"))
+    ap = int(cfg.get("UTB_ATR_PERIOD", "10"))
+    fresh = int(cfg.get("UTB_FRESH_BARS", "2"))
+    rr = float(cfg.get("UTB_RR", "1.8"))
+    stale_min = 45
+    out = []
+    for sym in _watchlist(cfg, broker):
+        if market_hours.category(sym) == "fx":   # FX ขาดทุนใน backtest → เลี่ยง
+            continue
+        df = m.rates(sym, tf, 200)
+        if df is None or len(df) < ap + 20 or "time" not in df.columns:
+            continue
+        try:
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _scalp.utbot_signal(df, key_value=kv, atr_period=ap, fresh_bars=fresh)
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "source": "utbot",
+                     "st_value": sig.get("ts_value"), "rsi": None,
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"UT Bot {tf} (kv={kv})"}}, None))
+    if out:
+        log.info("utbot(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
 def _scan_scalp(cfg, broker: set) -> list:
     """สแกน EMA+Stoch บน M15 (เฉพาะของผันผวน เลี่ยง FX ตามผล backtest) → [(bias, None)]
     เติมจังหวะ 'ตามเทรนด์' ระหว่างรอสัญญาณหลัก — ยังต้องผ่านเกราะ build_ticket ทุกด่าน
@@ -512,8 +582,10 @@ def main():
     cooldown = int(cfg.get("SYMBOL_COOLDOWN_SEC", "3600"))
     execute_on = cfg.get("EXECUTE_ORDERS", "false").lower() in ("1", "true", "yes", "on")
     auto_on = cfg.get("AUTO_TRADE", "false").lower() in ("1", "true", "yes", "on")
-    use_supertrend = cfg.get("USE_SUPERTREND", "true").lower() in ("1", "true", "yes", "on")  # SuperTrend H1 — สัญญาณหลัก
-    use_ema_stoch = cfg.get("USE_EMA_STOCH", "false").lower() in ("1", "true", "yes", "on")   # scalp EMA+Stoch M15
+    use_supertrend = cfg.get("USE_SUPERTREND", "true").lower() in ("1", "true", "yes", "on")   # SuperTrend H1
+    use_halftrend  = cfg.get("USE_HALFTREND",  "true").lower() in ("1", "true", "yes", "on")   # HalfTrend H1
+    use_utbot      = cfg.get("USE_UTBOT",      "true").lower() in ("1", "true", "yes", "on")   # UT Bot M15
+    use_ema_stoch  = cfg.get("USE_EMA_STOCH", "false").lower() in ("1", "true", "yes", "on")   # scalp EMA+Stoch M15
     use_fx_orb = cfg.get("USE_FX_ORB", "false").lower() in ("1", "true", "yes", "on")        # Asian-London ORB เฉพาะ FX
     use_hybrid = cfg.get("USE_HYBRID_PRO", "false").lower() in ("1", "true", "yes", "on")    # Hybrid-Pro (H1 trend + M15 pullback)
     max_pos = int(cfg.get("MAX_OPEN_POSITIONS", "5"))
@@ -701,13 +773,18 @@ def main():
                 else:
                     if not queue and now - last_scan > scan_gap:
                         syms = set(m.list_symbols())
-                        if use_supertrend:                 # SuperTrend H1 — สัญญาณหลัก (แทน CDC)
-                            queue = _scan_supertrend(cfg, syms)
-                        if use_ema_stoch and auto_on:      # EMA+Stoch M15 — เติมจังหวะ
+                        queue = []
+                        if use_supertrend:                 # SuperTrend H1
+                            queue += _scan_supertrend(cfg, syms)
+                        if use_halftrend:                  # HalfTrend H1
+                            queue += _scan_halftrend(cfg, syms)
+                        if use_utbot and auto_on:          # UT Bot M15 (ตอบสนองไว)
+                            queue += _scan_utbot(cfg, syms)
+                        if use_ema_stoch and auto_on:      # EMA+Stoch M15
                             queue += _scan_scalp(cfg, syms)
-                        if use_fx_orb and auto_on:         # FX ORB ช่วง London
+                        if use_fx_orb and auto_on:         # FX ORB London
                             queue += _scan_fx_orb(cfg, syms)
-                        if use_hybrid and auto_on:         # Hybrid-Pro (H1+M15 multi-TF)
+                        if use_hybrid and auto_on:         # Hybrid-Pro H1+M15
                             queue += _scan_hybrid(cfg, syms)
                         last_scan = now
                         log.info("สแกนได้ %d ตัวมีทิศ", len(queue))
