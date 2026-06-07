@@ -680,7 +680,17 @@ def main():
     tg.send_text(token, chat, f"🤖 Part 2 เริ่มทำงาน · โหมด {mode_txt}\n"
                               "พิมพ์ /help ดูคำสั่ง · /pause หยุดชั่วคราว · /closeall ปิดไม้ทั้งหมด")
 
+    # ── Drain pending Telegram messages ─────────────────────────────────────
+    # ทุกครั้งที่บอทเริ่มใหม่ offset=0 → Telegram ส่ง command เก่า (/stop /restart) กลับมา
+    # แก้: อ่านทิ้งทั้งหมดก่อน แล้วตั้ง offset ไปที่ message ล่าสุด
+    # ผล: บอทเริ่มรับ command "ใหม่เท่านั้น" หลังจากบูตแล้ว
     offset = 0
+    _old = tg.get_updates(token, 0)
+    if _old:
+        offset = _old[-1]["update_id"] + 1
+        tg.ack_updates(token, offset)
+        log.info("drained %d pending Telegram updates (offset→%d)", len(_old), offset)
+
     queue: list = []
     pending = None
     last_scan = 0.0
