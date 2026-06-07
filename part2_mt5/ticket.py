@@ -34,6 +34,9 @@ def _atr(df, n: int = 14) -> float:
 
 def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
                  part1_hint: Optional[dict] = None, scalp: Optional[dict] = None) -> Optional[dict]:
+    # ประเภทสินทรัพย์ — ใช้ตลอด function (spread / RSI threshold)
+    _sym_cat = market_hours.category(exsym)
+
     # เกราะพอร์ตขั้นต่ำสำหรับโลหะ: ทอง/เงินไม้ขั้นต่ำ (0.01 lot) ใหญ่เกินพอร์ตเล็ก
     # → ปลดล็อกให้เทรดเมื่อพอร์ตถึงเกณฑ์ (GOLD_MIN_BALANCE / SILVER_MIN_BALANCE) อัตโนมัติ
     _u = exsym.upper()
@@ -71,8 +74,14 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     else:
         _df_rsi = df
 
-    rsi_ovs = float(cfg.get("RSI_OVERSOLD", "30"))   # block sell เมื่อ RSI < ค่านี้
-    rsi_obt = float(cfg.get("RSI_OVERBOUGHT", "70")) # block buy เมื่อ RSI > ค่านี้
+    # RSI threshold แยก commodity — ทอง/น้ำมันวิ่ง overbought ได้นานในเทรนด์ (RSI 80+ ปกติมากสำหรับทอง bull)
+    # ใช้ค่า fallback จาก RSI_OVERSOLD/RSI_OVERBOUGHT ถ้าไม่ได้ตั้ง _COMMODITY ไว้
+    if _sym_cat == "commodity":
+        rsi_ovs = float(cfg.get("RSI_OVERSOLD_COMMODITY",  cfg.get("RSI_OVERSOLD",   "20")))
+        rsi_obt = float(cfg.get("RSI_OVERBOUGHT_COMMODITY", cfg.get("RSI_OVERBOUGHT", "82")))
+    else:
+        rsi_ovs = float(cfg.get("RSI_OVERSOLD",   "30"))   # block sell เมื่อ RSI < ค่านี้
+        rsi_obt = float(cfg.get("RSI_OVERBOUGHT",  "70"))  # block buy เมื่อ RSI > ค่านี้
 
     import numpy as _np
     _c = _df_rsi["close"].astype(float)
@@ -197,7 +206,6 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # crypto spread กว้างกว่า FX/commodity ตามธรรมชาติ → ใช้ threshold แยก asset class
     spread = (px["ask"] - px["bid"]) if (px and px.get("ask") and px.get("bid")) else 0.0
     spread_pct = (spread / spot * 100) if spot else 0.0
-    _sym_cat = market_hours.category(exsym)
     if _sym_cat == "crypto":
         max_spread = float(cfg.get("MAX_SPREAD_PCT_CRYPTO", "1.0"))
     else:
