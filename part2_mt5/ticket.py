@@ -54,26 +54,38 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     spot = px["ask"] if direction == "buy" else px["bid"]
     atr = _atr(df, 14)
 
-    # เกราะ RSI สุดขั้ว — คำนวณจาก entry-TF จริง (M15/H1)
-    # → กันขายก้นเหว (sell ตอน oversold) / ซื้อยอดดอย (buy ตอน overbought)
+    # ── เกราะ RSI สุดขั้ว ────────────────────────────────────────────────────
+    # ใช้ TF ที่ตรงกับเทคนิค ไม่ใช้ ENTRY_TF เสมอ
+    # เหตุผล: UT Bot M15 ควรเช็ค RSI บน M15 ไม่ใช่ H1 (entry_tf อาจต่างกัน)
+    _rsi_tf_map = {
+        "supertrend": cfg.get("ST_TF",  "H1"),
+        "halftrend":  cfg.get("HT_TF",  "H1"),
+        "utbot":      cfg.get("UTB_TF", "M15"),
+    }
+    rsi_tf = _rsi_tf_map.get(bias.get("source", ""), entry_tf)   # fallback → entry_tf
+    if rsi_tf.upper() != entry_tf.upper():
+        _df_rsi_raw = mt5.rates(exsym, rsi_tf, 60)
+        _df_rsi = _df_rsi_raw if (_df_rsi_raw is not None and len(_df_rsi_raw) >= 30) else df
+    else:
+        _df_rsi = df
+
     rsi_ovs = float(cfg.get("RSI_OVERSOLD", "30"))   # block sell เมื่อ RSI < ค่านี้
     rsi_obt = float(cfg.get("RSI_OVERBOUGHT", "70")) # block buy เมื่อ RSI > ค่านี้
 
-    # RSI จาก entry-TF จริง
     import numpy as _np
-    _c = df["close"].astype(float)
+    _c = _df_rsi["close"].astype(float)
     _d = _c.diff()
     _up = _d.clip(lower=0).rolling(14).mean()
     _dn = (-_d.clip(upper=0)).rolling(14).mean().replace(0, _np.nan)
-    rsi_tf = float((100 - 100 / (1 + _up / _dn)).fillna(50).iloc[-1])
-    if direction == "sell" and rsi_tf < rsi_ovs:
-        log.info("ข้าม %s — RSI(%s) %.0f oversold (ไม่ช็อตก้นเหว)", exsym, entry_tf, rsi_tf)
+    rsi_tf_val = float((100 - 100 / (1 + _up / _dn)).fillna(50).iloc[-1])
+    if direction == "sell" and rsi_tf_val < rsi_ovs:
+        log.info("ข้าม %s — RSI(%s) %.0f oversold (ไม่ช็อตก้นเหว)", exsym, rsi_tf, rsi_tf_val)
         return {"skipped": True, "exsym": exsym, "direction": direction,
-                "reason": f"RSI({entry_tf}) {rsi_tf:.0f} oversold (ไม่ช็อตก้นเหว)"}
-    if direction == "buy" and rsi_tf > rsi_obt:
-        log.info("ข้าม %s — RSI(%s) %.0f overbought (ไม่ long ยอดดอย)", exsym, entry_tf, rsi_tf)
+                "reason": f"RSI({rsi_tf}) {rsi_tf_val:.0f} oversold (ไม่ช็อตก้นเหว)"}
+    if direction == "buy" and rsi_tf_val > rsi_obt:
+        log.info("ข้าม %s — RSI(%s) %.0f overbought (ไม่ long ยอดดอย)", exsym, rsi_tf, rsi_tf_val)
         return {"skipped": True, "exsym": exsym, "direction": direction,
-                "reason": f"RSI({entry_tf}) {rsi_tf:.0f} overbought (ไม่ long ยอดดอย)"}
+                "reason": f"RSI({rsi_tf}) {rsi_tf_val:.0f} overbought (ไม่ long ยอดดอย)"}
 
     lb = int(cfg.get("SL_LOOKBACK", "20"))            # จำนวนแท่งหา swing
     mult = float(cfg.get("SL_ATR_MULT", "1.5"))       # กันชน ATR
@@ -148,13 +160,14 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         tbp = brt = ibb = tlp = {"detected": False}
 
     # ── VPOC Filter + TP Zone ─────────────────────────────────────────────────
-    # scalp trades ข้าม — ใช้ SL/TP ของกลยุทธ์เองแล้ว
+    # ใช้เฉพาะเทคนิค trend-following — กัน scalp/ORB ที่ SL/TP ตัวเองแน่นแล้วถูกแทรกแซง
     # Filter : ราคาใกล้ VPOC < VPOC_FILTER_ATR×ATR → ตลาดสมดุล ยังไม่มีทิศ → ลด lot
     # TP Zone: VPOC อยู่ข้างหน้า ≥ VPOC_MIN_RR×R → ใช้เป็น TP แทน fixed R:R
     vpoc_info: dict = {}
     near_vpoc: bool = False
     vpoc_tp_used: bool = False
-    if not scalp and cfg.get("USE_VPOC", "true").lower() in ("1", "true", "yes", "on"):
+    _vpoc_sources = {"supertrend", "halftrend", "utbot", "hybrid"}   # เทคนิค trend ที่ VPOC เหมาะ
+    if bias.get("source") in _vpoc_sources and cfg.get("USE_VPOC", "true").lower() in ("1", "true", "yes", "on"):
         _vpoc_tf   = cfg.get("VPOC_TF", "M5")
         _vpoc_bars = int(cfg.get("VPOC_BARS", "288"))    # 288×M5 = 24h ครอบทุก session
         _df_vp = mt5.rates(exsym, _vpoc_tf, _vpoc_bars)
@@ -262,7 +275,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
             "ibb": ibb, "tlp": tlp, "sr": sr, "scalp": scalp.get("tag") if scalp else None,
             "sizing": sizing, "gate": gate, "verdict": verdict, "used_balance": used_bal,
             "balance_is_test": bal <= 0, "reduced": reduced,
-            "rsi_tf": round(rsi_tf, 1),    # RSI จาก entry-TF จริง (M15/H1)
+            "rsi_tf": round(rsi_tf_val, 1),  # RSI จาก TF ของเทคนิคจริง (ไม่ใช่ ENTRY_TF เสมอ)
             "vpoc_info": vpoc_info, "near_vpoc": near_vpoc, "vpoc_tp_used": vpoc_tp_used}
 
 

@@ -181,6 +181,26 @@ def _scan_utbot(cfg, broker: set) -> list:
         sig = _scalp.utbot_signal(df, key_value=kv, atr_period=ap, fresh_bars=fresh)
         if not sig.get("detected"):
             continue
+
+        # ── ตรวจ H1 trend alignment ──────────────────────────────────────────
+        # UT Bot ตอบสนองไว (M15) อาจสวนเทรนด์ใหญ่ (H1) → กรองด้วย SuperTrend H1
+        # เหตุผล: ซื้อ M15 แต่ H1 ยังขาลง = เข้าสวนกระแส risky
+        _st_tf_h1 = cfg.get("ST_TF", "H1")
+        if tf.upper() != _st_tf_h1.upper():    # UT Bot TF ≠ H1 (เช่น M15)
+            _df_h1 = m.rates(sym, _st_tf_h1, 200)
+            if _df_h1 is not None and len(_df_h1) >= 100:
+                _h1_st = _scalp.supertrend(
+                    _df_h1,
+                    period=int(cfg.get("ST_PERIOD", "10")),
+                    mult=float(cfg.get("ST_MULT", "3.0")),
+                )
+                if _h1_st.get("direction") is not None:
+                    _h1_dir = "buy" if int(_h1_st["direction"][-1]) == 1 else "sell"
+                    if _h1_dir != sig["direction"]:
+                        log.info("ข้าม %s — UT Bot(%s) %s ขัด H1 SuperTrend (%s)",
+                                 sym, tf, sig["direction"], _h1_dir)
+                        continue
+
         out.append(({"symbol": sym, "direction": sig["direction"], "source": "utbot",
                      "st_value": sig.get("ts_value"), "rsi": None,
                      "scalp": {"sl": sig["sl"], "rr": rr,
@@ -914,8 +934,11 @@ def main():
                                 last_scan_key = kset
                     else:
                         # โหมด Manual: เสนอใบ + ปุ่มทีละใบ
+                        opened = _open_symbols()   # ตรวจไม้ที่ถืออยู่ — กันเสนอซ้ำตัวเดิม
                         while queue and pending is None:
                             bias, hint = queue.pop(0)
+                            if bias["symbol"] in opened:   # ถืออยู่แล้ว → ข้ามเงียบ
+                                continue
                             key = bias["symbol"] + bias["direction"]
                             if now - recent.get(key, 0) < cooldown:
                                 continue
