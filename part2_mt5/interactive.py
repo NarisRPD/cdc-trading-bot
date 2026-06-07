@@ -745,6 +745,7 @@ def main():
                                     scan_res.append((sym, dr, "skip", f"AI {dec} {conf}%"))
                                     log.info("⛔ ข้าม %s %s — เชื่อ AI (%s %s%%) %s", sym, dr, dec, conf,
                                              (t["verdict"].get("reason") or "")[:60])
+                                    recent[key] = now   # กัน re-scan symbol เดิมก่อนครบ cooldown (แม้ไม่ได้เปิดไม้)
                                     continue
                                 log.info("📉 CDC นำ: เข้า %s %s ไม้เล็ก (AI: %s %s%%)", sym, dr, dec, conf)
                             recent[key] = now
