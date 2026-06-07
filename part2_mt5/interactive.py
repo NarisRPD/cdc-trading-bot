@@ -852,6 +852,7 @@ def main():
                             if now - recent.get(key, 0) < cooldown:
                                 continue
                             # crypto blackout เพิ่มเติม (ช่วงบาง + options expiry)
+                            import market_hours   # ต้อง import ก่อนใช้ครั้งแรก (กัน UnboundLocalError จาก Python scoping)
                             if market_hours.category(sym) == "crypto":
                                 c_blk, c_ev = news_guard.is_blackout_crypto(finnhub, blackout_min)
                                 if c_blk:
@@ -862,7 +863,6 @@ def main():
                                 scan_res.append((sym, dr, "skip", f"ทิศ {dr} เต็ม ({max_per_dir} ไม้)"))
                                 continue
                             if datetime.now().weekday() < 5:       # กระจายเสี่ยง (จ-ศ · ลิมิตแยกตามกลุ่ม)
-                                import market_hours
                                 grp = market_hours.correlation_group(sym)
                                 lim = max_per_grp_us if grp == "หุ้น/ดัชนี" else max_per_grp
                                 if lim > 0 and _count_group(grp) >= lim:
