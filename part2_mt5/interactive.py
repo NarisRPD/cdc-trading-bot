@@ -760,6 +760,7 @@ def main():
                         except Exception as _e:
                             tg.send_text(token, chat,
                                          f"❌ git pull ล้มเหลว: {_e}\n🔄 Restart ด้วยโค้ดเดิม")
+                        tg.ack_updates(token, offset)  # ยืนยัน update กับ Telegram ก่อน exit
                         time.sleep(2)
                         sys.exit(0)   # wrapper (start_loop.bat / start_bot.sh) restart อัตโนมัติ
                     elif cmd == "stop":
@@ -770,6 +771,7 @@ def main():
                                      "Restart: รัน start_loop.bat หรือพิมพ์ /restart ใน Telegram")
                         if os.path.exists(_SHOULD_RUN):
                             os.remove(_SHOULD_RUN)
+                        tg.ack_updates(token, offset)  # ยืนยัน update กับ Telegram ก่อน exit
                         time.sleep(2)       # รอให้ message ส่งก่อน exit
                         sys.exit(0)
                     elif cmd == "restart":
@@ -777,6 +779,7 @@ def main():
                         tg.send_text(token, chat,
                                      "🔄 กำลัง restart บอท...\n"
                                      "รอ ~15 วิ บอทจะกลับมาและแจ้ง Telegram ✅")
+                        tg.ack_updates(token, offset)  # ยืนยัน update กับ Telegram ก่อน exit
                         time.sleep(2)       # รอให้ message ส่งก่อน exit
                         sys.exit(0)
 

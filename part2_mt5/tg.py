@@ -64,6 +64,12 @@ def set_commands(token: str) -> None:
     _call(token, "setMyCommands", timeout=10, commands=cmds)
 
 
+def ack_updates(token: str, offset: int) -> None:
+    """ยืนยัน offset กับ Telegram server ก่อน exit — กัน bot อ่าน command เก่าซ้ำหลัง restart
+    Telegram marks updates < offset ว่า consumed ทันทีที่รับ request นี้"""
+    _call(token, "getUpdates", timeout=5, offset=offset, limit=1)
+
+
 def answer_callback(token: str, cb_id: str, text: str = "") -> None:
     _call(token, "answerCallbackQuery", timeout=10, callback_query_id=cb_id, text=text)
 
