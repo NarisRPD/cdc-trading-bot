@@ -54,17 +54,39 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     spot = px["ask"] if direction == "buy" else px["bid"]
     atr = _atr(df, 14)
 
-    # เกราะ RSI สุดขั้ว: ไม่ช็อตตอน oversold / ไม่ long ตอน overbought (กันขายก้นเหว/ซื้อยอดดอย)
+    # เกราะ RSI สุดขั้ว (2 ชั้น):
+    # ชั้น 1 — bias.rsi จาก CDC scan (TF สูง เช่น D1)
+    # ชั้น 2 — คำนวณ RSI จาก entry-TF จริง (H1) เพื่ออุดช่องโหว่กรณี CDC ใช้ TF ต่าง
+    # → กันขายก้นเหว (sell ตอน oversold) / ซื้อยอดดอย (buy ตอน overbought)
+    rsi_ovs = float(cfg.get("RSI_OVERSOLD", "25"))
+    rsi_obt = float(cfg.get("RSI_OVERBOUGHT", "75"))
+
     rsi = bias.get("rsi")
     if isinstance(rsi, (int, float)):
-        if direction == "sell" and rsi < float(cfg.get("RSI_OVERSOLD", "25")):
-            log.info("ข้าม %s — RSI %.0f oversold (ไม่ช็อตก้นเหว)", exsym, rsi)
+        if direction == "sell" and rsi < rsi_ovs:
+            log.info("ข้าม %s — RSI(CDC) %.0f oversold (ไม่ช็อตก้นเหว)", exsym, rsi)
             return {"skipped": True, "exsym": exsym, "direction": direction,
-                    "reason": f"RSI {rsi:.0f} oversold (ไม่ช็อตก้นเหว)"}
-        if direction == "buy" and rsi > float(cfg.get("RSI_OVERBOUGHT", "75")):
-            log.info("ข้าม %s — RSI %.0f overbought (ไม่ long ยอดดอย)", exsym, rsi)
+                    "reason": f"RSI(CDC) {rsi:.0f} oversold (ไม่ช็อตก้นเหว)"}
+        if direction == "buy" and rsi > rsi_obt:
+            log.info("ข้าม %s — RSI(CDC) %.0f overbought (ไม่ long ยอดดอย)", exsym, rsi)
             return {"skipped": True, "exsym": exsym, "direction": direction,
-                    "reason": f"RSI {rsi:.0f} overbought (ไม่ long ยอดดอย)"}
+                    "reason": f"RSI(CDC) {rsi:.0f} overbought (ไม่ long ยอดดอย)"}
+
+    # ชั้น 2: RSI จาก entry-TF (H1) — อุดช่องโหว่กรณี CDC ดู D1 แต่ H1 oversold/overbought แล้ว
+    import numpy as _np
+    _c = df["close"].astype(float)
+    _d = _c.diff()
+    _up = _d.clip(lower=0).rolling(14).mean()
+    _dn = (-_d.clip(upper=0)).rolling(14).mean().replace(0, _np.nan)
+    rsi_tf = float((100 - 100 / (1 + _up / _dn)).fillna(50).iloc[-1])
+    if direction == "sell" and rsi_tf < rsi_ovs:
+        log.info("ข้าม %s — RSI(%s) %.0f oversold (ไม่ช็อตก้นเหว)", exsym, entry_tf, rsi_tf)
+        return {"skipped": True, "exsym": exsym, "direction": direction,
+                "reason": f"RSI({entry_tf}) {rsi_tf:.0f} oversold (ไม่ช็อตก้นเหว)"}
+    if direction == "buy" and rsi_tf > rsi_obt:
+        log.info("ข้าม %s — RSI(%s) %.0f overbought (ไม่ long ยอดดอย)", exsym, entry_tf, rsi_tf)
+        return {"skipped": True, "exsym": exsym, "direction": direction,
+                "reason": f"RSI({entry_tf}) {rsi_tf:.0f} overbought (ไม่ long ยอดดอย)"}
 
     lb = int(cfg.get("SL_LOOKBACK", "20"))            # จำนวนแท่งหา swing
     mult = float(cfg.get("SL_ATR_MULT", "1.5"))       # กันชน ATR
