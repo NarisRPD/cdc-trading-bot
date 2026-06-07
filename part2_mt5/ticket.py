@@ -61,6 +61,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         "supertrend": cfg.get("ST_TF",  "H1"),
         "halftrend":  cfg.get("HT_TF",  "H1"),
         "utbot":      cfg.get("UTB_TF", "M15"),
+        "pa":         cfg.get("PA_TF",  "H1"),    # Price Action ใช้ TF เดียวกับที่สแกน
     }
     rsi_tf = _rsi_tf_map.get(bias.get("source", ""), entry_tf)   # fallback → entry_tf
     if rsi_tf.upper() != entry_tf.upper():
@@ -166,7 +167,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     vpoc_info: dict = {}
     near_vpoc: bool = False
     vpoc_tp_used: bool = False
-    _vpoc_sources = {"supertrend", "halftrend", "utbot", "hybrid"}   # เทคนิค trend ที่ VPOC เหมาะ
+    _vpoc_sources = {"supertrend", "halftrend", "utbot", "hybrid", "pa"}   # เทคนิค trend ที่ VPOC เหมาะ
     if bias.get("source") in _vpoc_sources and cfg.get("USE_VPOC", "true").lower() in ("1", "true", "yes", "on"):
         _vpoc_tf   = cfg.get("VPOC_TF", "M5")
         _vpoc_bars = int(cfg.get("VPOC_BARS", "288"))    # 288×M5 = 24h ครอบทุก session
@@ -293,7 +294,8 @@ def format_ticket(t: dict) -> str:
     # แหล่งสัญญาณ (SuperTrend / Hybrid-Pro / EMA+Stoch / FX ORB)
     _src_map = {"supertrend": "📈 SuperTrend", "halftrend": "〰️ HalfTrend",
                 "utbot": "🤖 UT Bot", "hybrid": "🔀 Hybrid-Pro",
-                "scalp": "⚡ EMA+Stoch", "fx_orb": "🌅 FX ORB"}
+                "scalp": "⚡ EMA+Stoch", "fx_orb": "🌅 FX ORB",
+                "pa": "📐 Price Action"}
     src = b.get("source", "")
     src_txt = _src_map.get(src, f"📊 {src}" if src else "📊 สัญญาณ")
     if b.get("st_value"):

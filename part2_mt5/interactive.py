@@ -42,6 +42,7 @@ _SRC_MAP = {
     "hybrid":     "🔀 Hybrid-Pro",
     "scalp":      "⚡ EMA+Stoch",
     "fx_orb":     "🌅 FX ORB",
+    "pa":         "📐 Price Action",
 }
 _TRADE_META = os.path.join(os.path.dirname(__file__), "part2_trade_meta.json")
 _TRADE_META_MAX = 500   # เก็บแค่ N รายการล่าสุด (กันไฟล์ใหญ่เกิน)
@@ -308,6 +309,110 @@ def _scan_hybrid(cfg, broker: set) -> list:
     return out
 
 
+def _scan_pa(cfg, broker: set) -> list:
+    """Price Action & Market Structure Scanner — H1 (default)
+
+    2 รูปแบบสัญญาณ:
+    1. Reversal at Key S/R — uptrend→ซื้อที่แนวรับ, downtrend→ขายที่แนวต้าน + แท่งกลับตัวยืนยัน
+    2. Breakout & Retest (BRT) — เบรกแนว → ย่อกลับมาทดสอบ → แท่งยืนยัน → เข้าตามเทรนด์
+
+    ใช้ฟังก์ชันที่มีอยู่แล้ว ไม่สร้างโค้ดซ้ำ:
+      patterns.structure()          → โครงสร้าง HH/HL หรือ LH/LL
+      patterns.support_resistance() → หาแนวรับ-ต้านใกล้ราคา
+      candles.confirms()            → ยืนยันแท่งกลับตัว
+      patterns.breakout_retest()    → ตรวจ Breakout & Retest pattern
+    """
+    import candles
+    import pandas as pd
+    tf = cfg.get("PA_TF", "H1")
+    rr = float(cfg.get("PA_RR", "2.0"))
+    stale_min = 90 if tf in ("H1", "H4") else 45
+    out = []
+
+    for sym in _watchlist(cfg, broker):
+        df = m.rates(sym, tf, 200)
+        if df is None or len(df) < 60 or "time" not in df.columns:
+            continue
+        try:
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+
+        # คำนวณ ATR (True Range 14 แท่ง — ใช้คู่กับ support_resistance)
+        import numpy as _np
+        _h = df["high"].astype(float).values
+        _l = df["low"].astype(float).values
+        _c_arr = df["close"].astype(float).values
+        _pc = _np.roll(_c_arr, 1); _pc[0] = _c_arr[0]
+        _tr = _np.maximum(_h - _l, _np.maximum(abs(_h - _pc), abs(_l - _pc)))
+        atr = float(_np.mean(_tr[-14:]))
+        if atr <= 0:
+            continue
+
+        # ── วิเคราะห์โครงสร้างตลาด ────────────────────────────────────────────
+        struct = patterns.structure(df, lookback=60, swing=3)
+        trend = struct.get("trend", "side")   # "up" / "down" / "side"
+
+        # ── หาแนวรับ-ต้านใกล้ราคาปัจจุบัน ─────────────────────────────────────
+        sr = patterns.support_resistance(df, lookback=60, swing=3, atr=atr)
+
+        direction = None
+        sl = None
+        tag = None
+
+        # ── รูปแบบที่ 1: Reversal at Key S/R ─────────────────────────────────────
+        # Uptrend (HH/HL) + ราคาใกล้แนวรับ + แท่งกลับตัวขาขึ้น → BUY
+        # เหตุผล: ตลาดทำ HH/HL = โครงสร้างขาขึ้น → ย่อมาแนวรับ = จังหวะต่อเทรนด์
+        if trend == "up" and sr.get("near_support") and sr.get("support") is not None:
+            cdl = candles.confirms(df, "buy")
+            if cdl:
+                sl = round(sr["support"] - 0.5 * atr, 5)
+                direction = "buy"
+                tag = f"PA Reversal HL {tf}"
+
+        # Downtrend (LH/LL) + ราคาใกล้แนวต้าน + แท่งกลับตัวขาลง → SELL
+        # เหตุผล: ตลาดทำ LH/LL = โครงสร้างขาลง → เด้งมาแนวต้าน = จังหวะต่อเทรนด์
+        elif trend == "down" and sr.get("near_resistance") and sr.get("resistance") is not None:
+            cdl = candles.confirms(df, "sell")
+            if cdl:
+                sl = round(sr["resistance"] + 0.5 * atr, 5)
+                direction = "sell"
+                tag = f"PA Reversal LH {tf}"
+
+        # ── รูปแบบที่ 2: Breakout & Retest ───────────────────────────────────────
+        # breakout_retest() ตรวจแท่งกลับตัวไว้ก่อนแล้ว → ไม่ต้องเช็กซ้ำ
+        # ใช้เมื่อ Reversal ยังไม่ตรงเงื่อนไข (trend sideways / ราคายังไม่ถึงแนว)
+        if direction is None:
+            for _d in ("buy", "sell"):
+                brt = patterns.breakout_retest(df, direction=_d, atr=atr, lookback=60, swing=3)
+                if brt.get("detected"):
+                    direction = _d
+                    sl = brt["sl"]
+                    tag = f"PA Breakout Retest {tf}"
+                    break
+
+        if direction is None or sl is None:
+            continue
+
+        # ตรวจ SL ถูกฝั่ง + ห่างพอ (กัน SL ผิดด้าน / ชิดราคาจน noise เขี่ย)
+        c_price = float(df["close"].iloc[-1])
+        side_ok = (sl < c_price) if direction == "buy" else (sl > c_price)
+        if not side_ok or abs(c_price - sl) < 0.2 * atr:
+            continue
+
+        out.append((
+            {"symbol": sym, "direction": direction, "source": "pa",
+             "st_value": None, "rsi": None,
+             "scalp": {"sl": sl, "rr": rr, "tag": tag}},
+            None,
+        ))
+    if out:
+        log.info("pa(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
 def _check_metal_unlock(cfg, token, chat, bal: float, state: dict) -> None:
     """แจ้งเตือน + ปลดล็อกโลหะอัตโนมัติเมื่อพอร์ตถึงเกณฑ์ (เด้งเตือนครั้งเดียว/รอบขึ้น)"""
     if not bal or bal <= 0:
@@ -413,7 +518,7 @@ def _help_text() -> str:
         "/restart — 🔄 Restart บอท (ไม่ดึงโค้ดใหม่)\n"
         "/help — รายการคำสั่งนี้\n\n"
         "🔁 โหมด Auto: บอทสแกน → ตัดสินใจ → ยิงออเดอร์เอง → รายงานที่นี่\n"
-        "   เปิดไม้ใหม่เมื่อผ่านด่าน: SuperTrend/HalfTrend/UT Bot + แท่งเทียน/วอลุ่ม + Gemini + เกราะความเสี่ยง\n\n"
+        "   เปิดไม้ใหม่เมื่อผ่านด่าน: SuperTrend/HalfTrend/UT Bot/Price Action + แท่งเทียน/วอลุ่ม + Gemini + เกราะความเสี่ยง\n\n"
         "ℹ️ จัดการเอง: TP +2% ของราคา · +1R เลื่อน SL เท่าทุน · เลี่ยงข่าวแรง\n"
         "🛡️ เกราะ: เบรกขาดทุนวัน + ขาดทุนสะสม (drawdown) · จำกัดไม้ทิศเดียว · สรุปประจำวัน"
     )
@@ -657,6 +762,7 @@ def main():
     use_ema_stoch  = cfg.get("USE_EMA_STOCH", "false").lower() in ("1", "true", "yes", "on")   # scalp EMA+Stoch M15
     use_fx_orb = cfg.get("USE_FX_ORB", "false").lower() in ("1", "true", "yes", "on")        # Asian-London ORB เฉพาะ FX
     use_hybrid = cfg.get("USE_HYBRID_PRO", "false").lower() in ("1", "true", "yes", "on")    # Hybrid-Pro (H1 trend + M15 pullback)
+    use_pa     = cfg.get("USE_PA", "false").lower() in ("1", "true", "yes", "on")           # Price Action & Market Structure H1
     max_pos = int(cfg.get("MAX_OPEN_POSITIONS", "5"))
     notify_scan = cfg.get("NOTIFY_SCAN", "true").lower() in ("1", "true", "yes", "on")
     max_dd = float(cfg.get("MAX_DRAWDOWN_PCT", "0") or "0")        # เบรกขาดทุนสะสม (0=ปิด)
@@ -913,6 +1019,8 @@ def main():
                             queue += _scan_fx_orb(cfg, syms)
                         if use_hybrid and auto_on:         # Hybrid-Pro H1+M15
                             queue += _scan_hybrid(cfg, syms)
+                        if use_pa:                         # Price Action & Market Structure H1
+                            queue += _scan_pa(cfg, syms)
                         last_scan = now
                         log.info("สแกนได้ %d ตัวมีทิศ", len(queue))
                     if auto_on:
