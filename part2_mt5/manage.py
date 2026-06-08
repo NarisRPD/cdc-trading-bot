@@ -222,9 +222,15 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
 
         # ── 5) Trailing SL — เริ่มหลัง breakeven เท่านั้น ─────────────────
         # dist = max(R×factor, ATR×factor) ป้องกัน noise ในตลาดผันผวน
+        # US stocks/indices: tick size ใหญ่กว่า FX/commodity → ใช้ factor สูงกว่า
+        # (กัน retcode 10025 "No changes" เมื่อ step เล็กกว่า minimum tick)
         if tp_pct <= 0 and st["breakeven_done"]:
+            import market_hours as _mh
+            _sym_cat = _mh.category(p.symbol)
+            _effective_tfac = (float(cfg.get("TRAIL_FACTOR_US_STOCK", "1.2"))
+                               if _sym_cat in ("us_stock", "us_index") else tfac)
             atr_now = _current_atr(p.symbol, "M15")
-            dist = max(R * tfac, atr_now * tfac) if atr_now > 0 else R * tfac
+            dist = max(R * _effective_tfac, atr_now * _effective_tfac) if atr_now > 0 else R * _effective_tfac
             eps = cur * 1e-6
             if is_buy:
                 new_sl = cur - dist

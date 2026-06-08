@@ -44,6 +44,15 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
                 "reason": "ตลาดปิด"}
 
+    # ตรวจช่วง opening/closing range ของตลาด US — volatility พุ่ง สัญญาณ false เยอะ
+    # Opening: 30 นาทีแรกหลัง 20:30 ไทย · Closing: 15 นาทีก่อน 03:00 ไทย
+    _open_skip  = int(cfg.get("US_OPEN_SKIP_MIN",  "30"))
+    _close_skip = int(cfg.get("US_CLOSE_SKIP_MIN", "15"))
+    if market_hours.in_volatile_window(exsym, _open_skip, _close_skip):
+        log.debug("ข้าม %s — ช่วง opening/closing range US (skip %d/%d นาที)", exsym, _open_skip, _close_skip)
+        return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                "reason": f"ช่วงเปิด/ปิดตลาด US (volatile window {_open_skip}/{_close_skip}min)"}
+
     # เกราะพอร์ตขั้นต่ำสำหรับโลหะ: ทอง/เงินไม้ขั้นต่ำ (0.01 lot) ใหญ่เกินพอร์ตเล็ก
     # → ปลดล็อกให้เทรดเมื่อพอร์ตถึงเกณฑ์ (GOLD_MIN_BALANCE / SILVER_MIN_BALANCE) อัตโนมัติ
     _u = exsym.upper()
@@ -239,8 +248,12 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         max_spread = float(cfg.get("MAX_SPREAD_PCT_CRYPTO", "1.0"))
     elif _sym_cat == "us_stock":
         max_spread = float(cfg.get("MAX_SPREAD_PCT_STOCK", "0.40"))      # US CFD spread ปกติ 0.05-0.15%
-    elif _sym_cat in ("us_index", "index"):
+    elif _sym_cat == "us_index":
         max_spread = float(cfg.get("MAX_SPREAD_PCT_INDEX", "0.20"))      # US30/US500 spread ปกติ 0.03-0.10%
+    elif _sym_cat == "index":
+        # EU/Asia index (STOXX50/UK100/DAX) spread กว้างกว่า US index ตามธรรมชาติ
+        max_spread = float(cfg.get("MAX_SPREAD_PCT_EU_INDEX",
+                                   cfg.get("MAX_SPREAD_PCT_INDEX", "0.22")))
     elif _sym_cat == "commodity":
         max_spread = float(cfg.get("MAX_SPREAD_PCT_COMMODITY", "0.80"))  # Palladium/Platinum ~0.5-0.8% ปกติ
     else:
@@ -252,9 +265,15 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # หัก spread + ค่าคอม (ต่อรอบ) ออกจาก R:R → R:R สมจริง
     cost = spread + float(cfg.get("COMMISSION_PCT", "0") or "0") / 100 * spot
     rr_eff = ((abs(tp - spot) - cost) / (abs(spot - sl) + cost)) if (abs(spot - sl) + cost) > 0 else 0.0
-    min_rr = float(cfg.get("MIN_RR", "1.5"))
+    # R:R threshold แยกตามกลยุทธ์ — Hybrid-Pro มีหลาย filter กรองก่อนแล้ว (H1+M15+RSI+แท่ง)
+    # → ผ่อน threshold ได้เพราะ signal quality สูงกว่า VWAP/EMA M5 ที่สัญญาณเยอะกว่า
+    _source = bias.get("source", "")
+    if _source == "hybrid":
+        min_rr = float(cfg.get("MIN_RR_HYBRID", "1.30"))
+    else:
+        min_rr = float(cfg.get("MIN_RR", "1.5"))
     if rr_eff < min_rr:
-        log.info("ข้าม %s — R:R หลังหักต้นทุน 1:%.2f < ขั้นต่ำ 1:%.1f", exsym, rr_eff, min_rr)
+        log.info("ข้าม %s — R:R หลังหักต้นทุน 1:%.2f < ขั้นต่ำ 1:%.1f (%s)", exsym, rr_eff, min_rr, _source or "default")
         return {"skipped": True, "exsym": exsym, "direction": direction,
                 "reason": f"R:R(หักต้นทุน) 1:{rr_eff:.2f} < 1:{min_rr:.1f}"}
     rr_val = round(rr_eff, 2)          # R:R ที่หักต้นทุน spread/คอมแล้ว (ใช้แสดง+เรียนรู้)
@@ -288,7 +307,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         return {"skipped": True, "exsym": exsym, "direction": direction,
                 "reason": f"เสี่ยง {sizing['actual_pct']:.1f}% เกินเพดาน {max_risk_pct:.0f}%"}
 
-    gate = risk.gate(rr_val=rr_val, min_rr=float(cfg.get("MIN_RR", "1.5")),
+    gate = risk.gate(rr_val=rr_val, min_rr=min_rr,   # ใช้ min_rr ที่แยกตามกลยุทธ์แล้ว
                      open_positions=0, max_positions=int(cfg.get("MAX_OPEN_POSITIONS", "5")),
                      day_loss_pct=0.0, max_daily_loss_pct=float(cfg.get("MAX_DAILY_LOSS_PCT", "4.0")))
 

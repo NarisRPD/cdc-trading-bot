@@ -127,6 +127,37 @@ def is_open(sym: str, now: datetime = None) -> bool:
     return True
 
 
+def in_volatile_window(sym: str, open_range_min: int = 30, close_range_min: int = 15,
+                       now: datetime = None) -> bool:
+    """US stocks/indices: True ถ้าอยู่ในช่วง opening range หรือ closing range
+
+    Opening range : N นาทีแรกหลัง US market เปิด (20:30 → 20:30+N ไทย)
+                    ช่วงนี้ volatility พุ่ง สัญญาณ VWAP/EMA มักเป็น false signal
+    Closing range : N นาทีก่อน US market ปิด (03:00-N → 03:00 ไทย)
+                    window dressing + stop hunts ทำให้ SL โดนเขี่ย
+
+    crypto/FX/commodity → False เสมอ (ไม่มี hard session open/close)
+    """
+    if is_24h(sym):
+        return False
+    cat = category(sym)
+    if cat not in ("us_stock", "us_index"):
+        return False
+    now = now or datetime.now(_TZ_THAI)
+    wd = now.weekday()
+    if wd == 6:
+        return False
+    t_open  = _at(now, US_OPEN_H,  US_OPEN_M)      # 20:30 ไทย
+    t_close = _at(now, US_CLOSE_H, US_CLOSE_M)     # 03:00 ไทย
+    # Opening range: 20:30 → 20:30 + open_range_min
+    if t_open <= now < t_open + timedelta(minutes=open_range_min):
+        return True
+    # Closing range: 03:00 - close_range_min → 03:00
+    if t_close - timedelta(minutes=close_range_min) <= now < t_close:
+        return True
+    return False
+
+
 def closing_soon(sym: str, buffer_min: int, now: datetime = None) -> bool:
     """ตลาดของ sym ใกล้ปิดภายใน buffer_min นาทีไหม (เวลาไทย) — crypto → False เสมอ"""
     if is_24h(sym):

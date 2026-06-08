@@ -775,6 +775,14 @@ def vwap_bounce_signal(df, std_entry: float = 0.5, std_sl: float = 1.5,
         if not direction:
             return _E
 
+        # Volume confirmation — bounce ต้องมี volume รองรับ ไม่ใช่เด้งในตลาดเงียบ
+        # tick_volume ใช้แทน real volume ได้ (broker Forex/CFD: correlation ~90%)
+        _vols_v  = ddf["vol"]                          # normalize แล้ว (0 → 1 แล้ว ผ่าน replace)
+        _cur_vol = float(_vols_v.iloc[-1])
+        _avg_vol = float(_vols_v.rolling(20, min_periods=5).mean().iloc[-1])
+        if _avg_vol > 1 and _cur_vol < _avg_vol * 1.3:
+            return {**_E, "reason": f"volume {_cur_vol:.0f} < MA20×1.3={_avg_vol * 1.3:.0f} — false bounce"}
+
         # RSI — กัน overbought/oversold ที่อาจทำให้ false bounce
         closes = df["close"].values.astype(float)
         rp = min(rsi_period, len(closes) - 2)
