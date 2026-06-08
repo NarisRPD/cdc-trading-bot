@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta, timezone
 
 log = logging.getLogger("part2.journal")
 _FILE = os.path.join(os.path.dirname(__file__), "part2_journal.json")
@@ -38,7 +38,10 @@ def record_closed(days_back: int = 7) -> list:
     import MetaTrader5 as m5
     j = _load()
     seen = {t["deal_id"] for t in j}
-    deals = m5.history_deals_get(datetime.now() - timedelta(days=days_back), datetime.now() + timedelta(minutes=1))
+    # UTC-aware — MT5 Python รับ timezone-aware datetime ได้ และแปลงเป็น UTC ให้เอง
+    # ถ้าใช้ datetime.now() (naive, local VPS time) บน VPS ที่ timezone ≠ UTC จะเพี้ยน
+    _now = datetime.now(timezone.utc)
+    deals = m5.history_deals_get(_now - timedelta(days=days_back), _now + timedelta(minutes=1))
     if not deals:
         return []
     new = []
@@ -78,8 +81,11 @@ def compute_stats() -> "dict | None":
 def today_pnl() -> float:
     """กำไร/ขาดทุนวันนี้ = realized (ดีลปิดวันนี้) + floating (position เปิด) ของ Part 2"""
     import MetaTrader5 as m5
-    start = datetime.combine(datetime.now().date(), dtime.min)
-    deals = m5.history_deals_get(start, datetime.now() + timedelta(minutes=1)) or []
+    # UTC เที่ยงคืน = จุดเริ่มวันของ MT5 server (ส่วนใหญ่ UTC หรือ UTC+2/+3)
+    # ใช้ UTC-aware เพื่อให้ถูกต้องบน VPS ทุก timezone (ไม่พึ่ง OS local time)
+    _now = datetime.now(timezone.utc)
+    start = _now.replace(hour=0, minute=0, second=0, microsecond=0)  # เที่ยงคืน UTC วันนี้
+    deals = m5.history_deals_get(start, _now + timedelta(minutes=1)) or []
     realized = sum(d.profit + d.commission + d.swap for d in deals
                    if d.magic == _MAGIC and d.entry == m5.DEAL_ENTRY_OUT)
     floating = sum(p.profit for p in (m5.positions_get() or []) if p.magic == _MAGIC)

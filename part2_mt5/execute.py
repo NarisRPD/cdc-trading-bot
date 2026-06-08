@@ -6,6 +6,8 @@ part2_mt5/execute.py — เปิดออเดอร์บน MT5 (market ord
 """
 from __future__ import annotations
 import logging
+import time as _time
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("part2.execute")
 _MAGIC = 260605  # ป้ายระบุว่าเป็นออเดอร์ของ Part 2
@@ -37,7 +39,20 @@ def place_order(exsym: str, direction: str, lots: float, sl: float, tp: float,
         if res is None:
             return {"ok": False, "comment": f"order_send None: {m5.last_error()}"}
         if res.retcode == m5.TRADE_RETCODE_DONE:
-            return {"ok": True, "retcode": res.retcode, "ticket": res.order,
+            # หา position ticket จริงจาก deal history
+            # บน ECN/netting: order ticket ≠ position ticket → ใช้ position_id ของดีล
+            _time.sleep(0.2)  # รอ MT5 บันทึกดีลลงประวัติ
+            pos_ticket = res.order  # ค่า default (ใช้บน hedging account ปกติ)
+            _t_now = datetime.now(timezone.utc)
+            _deals = m5.history_deals_get(_t_now - timedelta(seconds=15),
+                                          _t_now + timedelta(seconds=5)) or []
+            for _d in _deals:
+                if _d.order == res.order and _d.magic == _MAGIC:
+                    pos_ticket = _d.position_id   # position ID จริง (ต่างบน ECN)
+                    break
+            return {"ok": True, "retcode": res.retcode,
+                    "ticket": res.order,           # order ticket (ใช้ใน Telegram message)
+                    "position_ticket": pos_ticket, # position ticket (ใช้ใน learn/trailing)
                     "price": res.price, "comment": "สำเร็จ"}
         # 10030 = filling mode ไม่รองรับ → ลองแบบถัดไป
         if res.retcode != 10030:

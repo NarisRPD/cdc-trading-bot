@@ -775,7 +775,9 @@ def _do_open(cfg, token, chat, p, execute_on: bool) -> None:
         return
     res = execute.place_order(t["exsym"], t["direction"], sz["lots"], t["sl"], t["tp"])
     if res.get("ok"):
-        learn.record_entry(res.get("ticket"), t)   # เก็บฟีเจอร์ไว้เรียนรู้ภายหลัง
+        # ใช้ position_ticket (ไม่ใช่ order ticket) — บน ECN อาจต่างกัน
+        _pos_id = res.get("position_ticket") or res.get("ticket")
+        learn.record_entry(_pos_id, t)             # เก็บฟีเจอร์ไว้เรียนรู้ภายหลัง
         _save_trade_src(res["ticket"], (t.get("bias") or {}).get("source", ""))  # บันทึก ticket→technique
         tg.edit_text(token, chat, p["msg_id"], _summary(t) +
                      f"\n\n✅ เปิดออเดอร์แล้ว! #{res.get('ticket')} @ {res.get('price')}"
@@ -942,7 +944,9 @@ def _auto_open(cfg, token, chat, t, execute_on: bool) -> bool:
         return True
     res = execute.place_order(t["exsym"], t["direction"], sz["lots"], t["sl"], t["tp"])
     if res.get("ok"):
-        learn.record_entry(res.get("ticket"), t)   # เก็บฟีเจอร์ไว้เรียนรู้ภายหลัง
+        # ใช้ position_ticket (ไม่ใช่ order ticket) — บน ECN อาจต่างกัน
+        _pos_id = res.get("position_ticket") or res.get("ticket")
+        learn.record_entry(_pos_id, t)             # เก็บฟีเจอร์ไว้เรียนรู้ภายหลัง
         _save_trade_src(res["ticket"], (t.get("bias") or {}).get("source", ""))  # บันทึก ticket→technique
         tg.send_text(token, chat, _open_report(t, res))
         log.info("AUTO เปิด %s %s lot %s → #%s", t["exsym"], t["direction"], sz["lots"], res.get("ticket"))
@@ -1411,10 +1415,8 @@ def main():
                         _state["daily_halt"] = True
                         _state["daily_pnl_baseline_date"] = datetime.now().date().isoformat()
                         _save_state(_state)
-                elif daily_halt and dpnl > -(bal * max_daily_loss / 200.0):
-                    daily_halt = False  # ฟื้นเมื่อขาดทุนลดลงครึ่งเพดาน
-                    _state["daily_halt"] = False
-                    _save_state(_state)
+                # ⚠️ ห้าม auto-clear daily_halt แม้ floating กลับมา
+                # เพราะทำให้ขาดทุนได้ 2× ในวันเดียว — ต้องพิมพ์ /reset_daily เพื่อเปิดโควต้าใหม่
 
             # 3) หาโอกาสใหม่ (ถ้าไม่ halt · ไม่ pause · ไม่ใช่ช่วงข่าวแรง)
             open_n = _count_open() if auto_on else 0
