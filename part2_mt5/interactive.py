@@ -808,6 +808,7 @@ def _help_text() -> str:
         "🤖 คำสั่ง Part 2 (MT5 Auto-Trading)\n\n"
         "/ping — 🏓 เช็คว่าบอทยังมีชีวิต + สถานะ MT5 + ขาดทุนวันนี้\n"
         "/status — สถานะสด: โหมด · พอร์ต · P/L วันนี้ · ไม้ที่เปิด\n"
+        "/scan — 🔍 สแกนตลาดทันที (ไม่รอรอบปกติ) + ส่งผลมาที่นี่\n"
         "/stats — สถิติผลเทรดสะสม (win rate · profit factor)\n"
         "/insights — 🧠 บทเรียน: เทคนิคไหนได้เงินจริง (บอทเรียนรู้จากผลจริง)\n"
         "/pause — ⏸️ หยุดเปิดไม้ใหม่ชั่วคราว (ไม้เก่ายังจัดการต่อ)\n"
@@ -1141,6 +1142,7 @@ def main():
     last_heartbeat = 0.0   # timestamp ส่ง heartbeat ล่าสุด
     _pos_full = False      # สถานะไม้เต็มรอบก่อน — แจ้ง Telegram เมื่อเต็ม/ว่างครั้งแรก
     last_notify_ts = 0.0   # timestamp ส่ง scan summary ล่าสุด — กัน spam ถี่กว่า scan_gap
+    _scan_requested = False  # True เมื่อผู้ใช้พิมพ์ /scan → ส่งผลสแกนไป Telegram แม้ notify_scan=false
 
     while True:
         try:
@@ -1272,6 +1274,25 @@ def main():
                     elif cmd == "resume":
                         _set_pause(False)
                         tg.send_text(token, chat, "▶️ กลับมาเปิดไม้อัตโนมัติแล้ว")
+                    elif cmd == "scan":
+                        # /scan — สแกนทันทีโดยไม่รอรอบปกติ + ส่งผลมาที่ Telegram
+                        if not _ensure_connected(cfg):
+                            tg.send_text(token, chat, "❌ ต่อ MT5 ไม่ได้ — ลองใหม่อีกสักครู่")
+                        elif daily_halt:
+                            tg.send_text(token, chat,
+                                         "🛑 บอทหยุด (daily halt) — พิมพ์ /reset_daily ก่อน\n"
+                                         "จะยังดูผล scan ไม่ได้จนกว่าจะ reset")
+                        elif _is_paused():
+                            tg.send_text(token, chat,
+                                         "⏸️ บอท pause อยู่ — พิมพ์ /resume แล้วค่อย /scan")
+                        else:
+                            tg.send_text(token, chat,
+                                         "🔍 กำลังสแกนตลาด...\n"
+                                         "ผลจะส่งมาใน ~10 วิ (รอ loop รอบถัดไป)")
+                            last_scan = 0.0          # รีเซ็ต timer → scan ทันทีรอบถัดไป
+                            last_scan_key = None     # อนุญาตส่ง summary แม้ผลเหมือนรอบก่อน
+                            queue.clear()            # ล้างสัญญาณเก่าที่ค้างอยู่
+                            _scan_requested = True   # flag: ส่งผล Telegram แม้ notify_scan=false
                     elif cmd == "closeall" and _ensure_connected(cfg):
                         _close_all(token, chat)
                     elif cmd == "update":
@@ -1486,6 +1507,12 @@ def main():
                             queue += _scan_orb_pro(cfg, syms)
                         last_scan = now
                         log.info("สแกนได้ %d ตัวมีทิศ", len(queue))
+                        # ผู้ใช้ /scan แต่ไม่มีสัญญาณเลย → แจ้งทันที
+                        if _scan_requested and not queue:
+                            tg.send_text(token, chat,
+                                         "🔍 สแกนเสร็จแล้ว — ไม่พบสัญญาณ ณ ขณะนี้\n"
+                                         "(ตลาดนิ่ง หรือยังอยู่นอกเวลาเปิด)")
+                            _scan_requested = False
                     if auto_on:
                         # โหมด Auto: ยิงเองทันทีจนเต็มเพดานไม้ (ไม่ต้องกดปุ่ม)
                         opened = _open_symbols()
@@ -1544,14 +1571,22 @@ def main():
                             log.info("scan: %s", "; ".join(
                                 f"{'✅' if st=='open' else '⛔'} {s} {dr} {detail or ''}"
                                 for s, dr, st, detail in scan_res))
-                            # แจ้ง Telegram เฉพาะเมื่อ NOTIFY_SCAN=true (default=false — ลด spam)
-                            # และ throttle ไม่เกิน 1 ครั้ง/scan_gap (กัน force-rescan ส่งซ้ำ)
-                            if notify_scan:
+                            # แจ้ง Telegram เมื่อ: NOTIFY_SCAN=true หรือ ผู้ใช้พิมพ์ /scan
+                            # throttle ปกติยังใช้อยู่สำหรับ notify_scan (กัน spam)
+                            # แต่ /scan ข้าม throttle ได้เสมอ — ผู้ใช้สั่งเองจึงต้องการเห็นผล
+                            if notify_scan or _scan_requested:
                                 kset = frozenset((s, st) for s, _, st, _ in scan_res)
-                                if kset != last_scan_key and now - last_notify_ts >= scan_gap:
+                                if _scan_requested or (kset != last_scan_key and now - last_notify_ts >= scan_gap):
                                     tg.send_text(token, chat, _scan_summary(scan_res))
                                     last_scan_key = kset
                                     last_notify_ts = now
+                            _scan_requested = False   # reset ไม่ว่าจะส่งหรือไม่
+                        elif _scan_requested:
+                            # scanner วิ่งแล้ว มีสัญญาณ แต่ทุกตัวถูกกรองออก (spread/RSI/ไม้เต็ม)
+                            tg.send_text(token, chat,
+                                         "🔍 สแกนเสร็จ — พบสัญญาณแต่ผ่านด่านไม่ได้\n"
+                                         "(spread กว้าง / RSI ออกโซน / ไม้เต็ม / ตลาดปิด)")
+                            _scan_requested = False
                     else:
                         # โหมด Manual: เสนอใบ + ปุ่มทีละใบ
                         opened = _open_symbols()   # ตรวจไม้ที่ถืออยู่ — กันเสนอซ้ำตัวเดิม

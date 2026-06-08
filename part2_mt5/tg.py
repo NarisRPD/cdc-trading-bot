@@ -56,16 +56,17 @@ def send_text(token: str, chat_id: str, text: str) -> None:
 def set_commands(token: str) -> None:
     """ลงทะเบียนเมนูคำสั่ง (โผล่ตอนพิมพ์ / ใน Telegram) — เรียกครั้งเดียวตอนเริ่ม"""
     cmds = [
-        {"command": "status", "description": "สถานะ · โหมด · พอร์ต · P/L วันนี้ · ไม้ที่เปิด"},
-        {"command": "stats", "description": "สถิติผลเทรด (win rate · profit factor)"},
+        {"command": "status",   "description": "สถานะ · โหมด · พอร์ต · P/L วันนี้ · ไม้ที่เปิด"},
+        {"command": "scan",     "description": "สแกนตลาดทันที — ไม่รอรอบปกติ"},
+        {"command": "stats",    "description": "สถิติผลเทรด (win rate · profit factor)"},
         {"command": "insights", "description": "บทเรียน: เทคนิคไหนได้เงินจริง (บอทเรียนรู้)"},
-        {"command": "pause", "description": "หยุดเปิดไม้ใหม่ชั่วคราว (auto)"},
-        {"command": "resume", "description": "กลับมาเปิดไม้อัตโนมัติ"},
+        {"command": "pause",    "description": "หยุดเปิดไม้ใหม่ชั่วคราว (auto)"},
+        {"command": "resume",   "description": "กลับมาเปิดไม้อัตโนมัติ"},
         {"command": "closeall", "description": "ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)"},
         {"command": "update",   "description": "ดึงโค้ดใหม่จาก GitHub แล้ว restart อัตโนมัติ"},
         {"command": "stop",     "description": "หยุดบอท (ไม้เปิดอยู่ยังคงเปิดใน MT5)"},
         {"command": "restart",  "description": "Restart บอท (ไม่ดึงโค้ดใหม่)"},
-        {"command": "help", "description": "รายการคำสั่งทั้งหมด"},
+        {"command": "help",     "description": "รายการคำสั่งทั้งหมด"},
     ]
     _call(token, "setMyCommands", timeout=10, commands=cmds)
 
