@@ -10,6 +10,7 @@ part2_mt5/run.py — ตัวรันหลัก Part 2
 """
 from __future__ import annotations
 import logging
+import os
 import sys
 import time
 
@@ -24,6 +25,33 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 log = logging.getLogger("part2.run")
 
 TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+
+# ไฟล์เก็บ symbol ที่โบรกไม่มี — ไม่ต้องลอง resolve ซ้ำทุก restart
+_DEAD_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "part2_dead_symbols.txt")
+# cache watchlist ในหน่วยความจำ — _watchlist() ถูกเรียกจากทุก scanner (~9ครั้ง/รอบ)
+# ป้องกัน log ซ้ำและคำนวณซ้ำโดยไม่จำเป็น
+_wl_cache: "list[str] | None" = None
+_wl_cache_key: "tuple | None" = None
+
+
+def _load_dead() -> set:
+    """โหลด symbol ที่โบรกไม่มี (บันทึกไว้ข้าม restart)"""
+    try:
+        if os.path.exists(_DEAD_FILE):
+            with open(_DEAD_FILE, encoding="utf-8") as f:
+                return {ln.strip().upper() for ln in f if ln.strip() and not ln.startswith("#")}
+    except Exception:  # noqa: BLE001
+        pass
+    return set()
+
+
+def _save_dead(dead: set) -> None:
+    try:
+        with open(_DEAD_FILE, "w", encoding="utf-8") as f:
+            f.write("# symbol ที่โบรกไม่มี — ลบบรรทัดออกแล้ว restart เพื่อเพิ่มกลับ\n")
+            f.write("\n".join(sorted(dead)) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 # watchlist เริ่มต้น — ใช้ชื่อ "core" (ไม่มี suffix) → resolve เป็นชื่อจริงของโบรกตอนรัน
 _DEFAULT_WATCH = [
@@ -44,16 +72,44 @@ _DEFAULT_WATCH = [
 
 
 def _watchlist(cfg: dict, broker: set) -> list[str]:
+    """คืน list symbol ที่โบรกมีจริง — cache ใน memory กัน log ซ้ำ (~9 scanner/รอบ)"""
+    global _wl_cache, _wl_cache_key
+
+    # cache key = SCAN_SYMBOLS config + จำนวน symbol ที่โบรกมี (กัน reconnect เปลี่ยน)
+    _key = (cfg.get("SCAN_SYMBOLS", ""), len(broker))
+    if _wl_cache is not None and _wl_cache_key == _key:
+        return _wl_cache   # ใช้ cache — ไม่ resolve/log ซ้ำ
+
     from symbol_map import resolve
+
+    # กรอง dead symbols ออกก่อน — ไม่เสียเวลา resolve symbol ที่รู้แล้วว่าโบรกไม่มี
+    dead = _load_dead()
     raw = cfg.get("SCAN_SYMBOLS", "").strip()
     want = [s.strip() for s in raw.split(",") if s.strip()] if raw else _DEFAULT_WATCH
+    want = [s for s in want if s.upper() not in dead]
+
     have, missing = [], []
     for s in want:
-        r = resolve(s, broker)        # XAUUSD → XAUUSD หรือ XAUUSDm ตามชนิดบัญชี
+        r = resolve(s, broker)   # XAUUSD → XAUUSDm ตามชนิดบัญชี
         (have if r else missing).append(r or s)
+
     if missing:
-        log.info("ข้าม (โบรกไม่มี): %s", ", ".join(missing))
+        # บันทึกถาวร + log ครั้งเดียว (ไม่ log ซ้ำในรอบสแกนเดียวกัน/restart ครั้งต่อไป)
+        new_dead = dead | {s.upper() for s in missing}
+        _save_dead(new_dead)
+        log.info("โบรกไม่มี → เอาออกจาก watchlist ถาวร: %s", ", ".join(sorted(missing)))
+        log.info("(ลบชื่อออกจาก %s แล้ว restart ถ้าต้องการเพิ่มกลับ)", _DEAD_FILE)
+
+    _wl_cache = have
+    _wl_cache_key = _key
     return have
+
+
+def clear_watchlist_cache() -> None:
+    """เคลียร์ cache watchlist — เรียกหลัง /set SCAN_SYMBOLS หรือ reconnect broker"""
+    global _wl_cache, _wl_cache_key
+    _wl_cache = None
+    _wl_cache_key = None
 
 
 def _part1_hints(cfg: dict, broker: set) -> dict:
