@@ -801,6 +801,7 @@ def _stats_text() -> str:
 def _help_text() -> str:
     return (
         "🤖 คำสั่ง Part 2 (MT5 Auto-Trading)\n\n"
+        "/ping — 🏓 เช็คว่าบอทยังมีชีวิต + สถานะ MT5 + ขาดทุนวันนี้\n"
         "/status — สถานะสด: โหมด · พอร์ต · P/L วันนี้ · ไม้ที่เปิด\n"
         "/stats — สถิติผลเทรดสะสม (win rate · profit factor)\n"
         "/insights — 🧠 บทเรียน: เทคนิคไหนได้เงินจริง (บอทเรียนรู้จากผลจริง)\n"
@@ -1150,7 +1151,17 @@ def main():
                     pending = None
                 elif msg:
                     cmd = (msg.get("text") or "").strip().lower().lstrip("/").split("@")[0]
-                    if cmd in ("help", "start"):
+                    if cmd == "ping":
+                        # health check — ตอบทันทีโดยไม่ต้องพึ่ง MT5 หรือ logic อื่น
+                        import MetaTrader5 as _m5t
+                        _conn = "🟢 MT5 เชื่อมต่อ" if _m5t.terminal_info() else "🔴 MT5 หลุด"
+                        _halt_s = "🛑 halt" if daily_halt else ("⏸️ pause" if _is_paused() else "✅ ปกติ")
+                        tg.send_text(token, chat,
+                                     f"🏓 pong — บอทยังทำงาน\n"
+                                     f"{_conn} · สถานะ {_halt_s}\n"
+                                     f"ขาดทุนวันนี้: ${journal.today_pnl() - _daily_pnl_baseline:+.2f} "
+                                     f"(เพดาน {max_daily_loss}%)")
+                    elif cmd in ("help", "start"):
                         tg.send_text(token, chat, _help_text())
                     elif cmd == "status" and _ensure_connected(cfg):
                         tg.send_text(token, chat, _status_text(auto_on, execute_on))
