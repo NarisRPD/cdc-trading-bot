@@ -1,12 +1,15 @@
 """
 part2_mt5/manage.py — จัดการ position แบบ adaptive (เรียกทุก ๆ ไม่กี่วิใน loop)
 
-กฎ (แปลงจาก "feeling" 3 ข้อ → วัดได้):
-  1. เพดาน: กำไรถึง HARD_TP_PCT (2%) → ปิดทันที (ฟันเร็วตอนพุ่ง)
-  2. ถึง PARTIAL_AT_PCT (0.5%) ครั้งแรก → ปิดบางส่วน (ล็อกกำไร) + เลื่อน SL เท่าทุน (worst case = เสมอ)
-  3. หลังจากนั้น → trailing SL ตามราคา (ราคาย่อ = MT5 ปิดเก็บใกล้ยอดเอง)
+กฎ (แปลงจาก "feeling" 4 ข้อ → วัดได้):
+  1. TP ทันที เมื่อกำไรถึง HARD_TP_R (default 2.5R)
+  2. Partial close 50% เมื่อถึง PARTIAL_AT_R (default 1.0R) — เก็บกำไรก้อนแรก
+  3. เลื่อน SL เท่าทุน เมื่อถึง BREAKEVEN_AT_R (default 1.5R) — แยกจาก partial
+     → ให้ราคา "หายใจ" ระหว่าง 1R-1.5R โดยไม่บังทุนเร็วเกินไป
+  4. Trailing SL (ATR-aware) เริ่มหลัง breakeven — ล็อกกำไรตามราคา
+  5. (optional) Reversal exit: ถ้ากำไรอยู่แล้วเจอ reversal candle M5 → ปิดก่อนชน SL
 
-ปลอดภัย: trailing ทำผ่าน "SL จริงใน MT5" → ถึงบอท/เน็ตล่ม MT5 ก็ยังปิดให้ที่ SL
+ปลอดภัย: SL/TP จริงถูกเซ็ตใน MT5 → ถึงบอท/เน็ตล่ม MT5 ก็ยังตัดให้ที่ SL
 จัดการเฉพาะไม้ของ Part 2 (magic 260605)
 """
 from __future__ import annotations
@@ -16,22 +19,25 @@ import execute
 
 log = logging.getLogger("part2.manage")
 _MAGIC = 260605
-_state: dict = {}        # ticket -> {"partial": bool, "risk": float}
+_state: dict = {}        # ticket → {"partial_done": bool, "breakeven_done": bool, "risk": float}
 _atr_cache: dict = {}    # sym → (atr_value, timestamp) — กันเรียก MT5 ซ้ำทุก loop
 
 
-def _current_atr(sym: str, n: int = 14) -> float:
-    """ATR ปัจจุบัน (M15, True Range) — adaptive trailing SL ตามความผันผวนจริง
-    cache 60 วิ ต่อ symbol เพื่อลด MT5 API call"""
-    import time as _t
+def _current_atr(sym: str, tf_str: str = "M15", n: int = 14) -> float:
+    """ATR ปัจจุบันบน TF ที่กำหนด — cache 60 วิต่อ symbol"""
+    import time as _t, MetaTrader5 as m5, numpy as np
     now = _t.time()
-    cached = _atr_cache.get(sym)
+    key = (sym, tf_str)
+    cached = _atr_cache.get(key)
     if cached and now - cached[1] < 60:
         return cached[0]
+    _tf_map = {
+        "M1": m5.TIMEFRAME_M1, "M5": m5.TIMEFRAME_M5,
+        "M15": m5.TIMEFRAME_M15, "H1": m5.TIMEFRAME_H1,
+    }
+    tf = _tf_map.get(tf_str.upper(), m5.TIMEFRAME_M15)
     try:
-        import MetaTrader5 as m5
-        import numpy as np
-        rates = m5.copy_rates_from_pos(sym, m5.TIMEFRAME_M15, 0, n + 2)
+        rates = m5.copy_rates_from_pos(sym, tf, 0, n + 2)
         if rates is None or len(rates) < 5:
             return 0.0
         h = np.array([r["high"] for r in rates], dtype=float)
@@ -40,7 +46,7 @@ def _current_atr(sym: str, n: int = 14) -> float:
         pc = np.roll(c, 1); pc[0] = c[0]
         tr = np.maximum(h - l_arr, np.maximum(np.abs(h - pc), np.abs(l_arr - pc)))
         atr = float(tr[-n:].mean())
-        _atr_cache[sym] = (atr, now)
+        _atr_cache[key] = (atr, now)
         return atr
     except Exception:  # noqa: BLE001
         return 0.0
@@ -56,23 +62,61 @@ def _round_vol(vol: float, sym: str) -> float:
     return round(v, 2) if v >= info.volume_min else 0.0
 
 
+def _has_reversal_candle(sym: str, direction: str, tf_str: str = "M5") -> bool:
+    """ตรวจ reversal candle บน TF ที่กำหนด
+    direction = ทิศของ position (buy → ตรวจ bearish reversal, sell → bullish reversal)
+    คืน True ถ้าเจอสัญญาณกลับตัว — ใช้ปิดไม้ก่อนกำไรหายไปหมด"""
+    import MetaTrader5 as m5, numpy as np
+    _tf_map = {
+        "M1": m5.TIMEFRAME_M1, "M5": m5.TIMEFRAME_M5,
+        "M15": m5.TIMEFRAME_M15, "H1": m5.TIMEFRAME_H1,
+    }
+    tf = _tf_map.get(tf_str.upper(), m5.TIMEFRAME_M5)
+    try:
+        rates = m5.copy_rates_from_pos(sym, tf, 0, 4)
+        if rates is None or len(rates) < 3:
+            return False
+        import pandas as pd
+        df = pd.DataFrame(rates)
+        df.columns = [c.lower() for c in df.columns]
+        if "tick_volume" in df.columns:
+            df = df.rename(columns={"tick_volume": "volume"})
+        import candles as cdl
+        # ตรวจ reversal ฝั่งตรงข้ามกับ position (buy → ตรวจ bearish)
+        opp = "sell" if direction == "buy" else "buy"
+        patterns = cdl.confirms(df, opp)
+        # กรอง: เอาเฉพาะ strength 2 (engulfing, pin bar, shooting star, marubozu — ไม่เอา doji/inside)
+        strong = [p for p in patterns if p.get("strength", 0) >= 2]
+        return len(strong) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def manage_positions(cfg: dict, balance: float = 0) -> None:
-    """จัดการไม้แบบ R-multiple (R = ระยะ SL เริ่มต้น) — สม่ำเสมอทุกขนาดไม้:
-      ถึง +PARTIAL_AT_R → ปิดบางส่วน + เลื่อน SL เท่าทุน · trail ตาม R · ถึง +HARD_TP_R → ปิดทันที
-    (balance ไม่ใช้แล้ว เก็บไว้เพื่อความเข้ากันได้กับตัวเรียก)"""
+    """จัดการไม้แบบ R-multiple — แยก partial close จาก breakeven trigger:
+      ถึง +PARTIAL_AT_R  → ปิดบางส่วน (เก็บกำไรก้อนแรก)
+      ถึง +BREAKEVEN_AT_R → เลื่อน SL เท่าทุน (ให้ราคาหายใจ 1R-1.5R ก่อน)
+      หลัง breakeven     → trailing SL ตาม ATR (ล็อกกำไรที่เหลือ)
+      USE_REVERSAL_EXIT  → ถ้ากำไรอยู่แล้วเจอ reversal candle → ปิดก่อนชน SL"""
     import MetaTrader5 as m5
     poss = m5.positions_get()
     if not poss:
         _state.clear()
         return
-    partial_at = float(cfg.get("PARTIAL_AT_R", "1.0"))
-    hard_r = float(cfg.get("HARD_TP_R", "2.5"))
-    ratio = float(cfg.get("PARTIAL_RATIO", "0.5"))
-    tfac = float(cfg.get("TRAIL_FACTOR", "0.7"))
 
-    tp_pct = float(cfg.get("TP_PRICE_PCT", "0") or "0")   # ปิดเมื่อราคาขยับถึง N% (0 = ไม่ใช้ ใช้ R-based)
+    partial_at  = float(cfg.get("PARTIAL_AT_R",   "1.0"))   # ปิดบางส่วนเมื่อกำไรถึง 1R
+    breakeven_at = float(cfg.get("BREAKEVEN_AT_R", "1.5"))  # เลื่อน SL เท่าทุนที่ 1.5R (แยกจาก partial)
+    hard_r      = float(cfg.get("HARD_TP_R",       "2.5"))  # ปิดทั้งหมดเมื่อกำไรถึง 2.5R
+    ratio       = float(cfg.get("PARTIAL_RATIO",   "0.5"))  # ปิดบางส่วน 50%
+    tfac        = float(cfg.get("TRAIL_FACTOR",    "0.7"))  # ระยะ trailing = max(R, ATR) × factor
+    tp_pct      = float(cfg.get("TP_PRICE_PCT",    "0") or "0")  # TP ตาม % (0 = ไม่ใช้)
 
-    # 0) TP ก่อนตลาดปิด — ปิดไม้ที่ตลาดใกล้ปิด ถ้า "ไม้กำไร" หรือ "พอร์ตวันนี้เขียว" (ไม่รวม crypto 24ชม.)
+    # Reversal exit — ปิดก่อนชน SL ถ้าเจอ candle กลับตัวและยังกำไรอยู่
+    use_rev_exit  = cfg.get("USE_REVERSAL_EXIT", "false").lower() in ("1", "true", "yes", "on")
+    rev_min_r     = float(cfg.get("REVERSAL_EXIT_MIN_R", "0.5"))   # min R ก่อนเช็ค reversal
+    rev_tf        = cfg.get("REVERSAL_EXIT_TF",   "M5")            # TF ตรวจ reversal candle
+
+    # 0) TP ก่อนตลาดปิด — ปิดไม้ที่ตลาดใกล้ปิด ถ้า "ไม้กำไร" หรือ "พอร์ตวันนี้เขียว" (ไม่รวม crypto)
     if cfg.get("CLOSE_BEFORE_MARKET_CLOSE", "true").lower() in ("1", "true", "yes", "on"):
         import market_hours
         buf = int(cfg.get("MARKET_CLOSE_BUFFER_MIN", "20"))
@@ -81,12 +125,12 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
             import journal
             day_pnl = journal.today_pnl()
             for p in closing:
-                if p.profit > 0 or day_pnl > 0:           # ไม้กำไร หรือ พอร์ตวันนี้เขียว
+                if p.profit > 0 or day_pnl > 0:
                     if execute.close_position(p).get("ok"):
                         log.info("🔔 ตลาดใกล้ปิด → ปิด %s (ไม้ $%.2f · พอร์ตวันนี้ $%.2f)",
                                  p.symbol, p.profit, day_pnl)
                         _state.pop(p.ticket, None)
-            poss = m5.positions_get() or ()               # refetch หลังปิด
+            poss = m5.positions_get() or ()
 
     alive = set()
     for p in poss:
@@ -97,9 +141,9 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
         if not tick:
             continue
         is_buy = p.type == m5.POSITION_TYPE_BUY
-        cur = tick.bid if is_buy else tick.ask                  # ราคาที่ปิดไม้ได้จริง
+        cur = tick.bid if is_buy else tick.ask         # ราคาที่ปิดไม้ได้จริง
 
-        # 0) Take-profit ตาม % ราคา (ผู้ใช้กำหนด: ราคาขึ้นถึงเป้า → ปิดทั้งไม้ทันที)
+        # ── TP ตาม % ราคา ─────────────────────────────────────────────────────
         if tp_pct > 0:
             pchg = ((cur - p.price_open) if is_buy else (p.price_open - cur)) / p.price_open * 100
             if pchg >= tp_pct:
@@ -108,49 +152,90 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
                 _state.pop(p.ticket, None)
                 continue
 
-        st = _state.setdefault(p.ticket, {"partial": False,
-                                          "risk": abs(p.price_open - p.sl) if p.sl else None})
+        # ── State tracking ──────────────────────────────────────────────────
+        st = _state.setdefault(p.ticket, {
+            "partial_done": False,    # ปิดบางส่วนแล้ว (PARTIAL_AT_R)
+            "breakeven_done": False,  # เลื่อน SL เท่าทุนแล้ว (BREAKEVEN_AT_R)
+            "risk": abs(p.price_open - p.sl) if p.sl else None,
+        })
+        # backward compat: migrate state เก่าที่มีแค่ "partial"
+        if "partial" in st and "partial_done" not in st:
+            was_partial = st.pop("partial")
+            st["partial_done"] = was_partial
+            st["breakeven_done"] = was_partial   # ถ้าเคย partial แล้ว ถือว่า breakeven ด้วย
         if st["risk"] is None and p.sl:
             st["risk"] = abs(p.price_open - p.sl)
         R = st["risk"]
-        if not R or R <= 0:          # ไม่รู้ระยะเสี่ยงเริ่มต้น → ข้าม (ปล่อย SL/TP ทำงาน)
+        if not R or R <= 0:          # ไม่รู้ความเสี่ยงเริ่มต้น → ข้าม
             continue
         rmult = ((cur - p.price_open) if is_buy else (p.price_open - cur)) / R
 
-        # 1) เพดาน R → ปิดทันที (ปิดไว้เมื่อใช้ price-% TP เพื่อให้ไม้วิ่งถึงเป้า %)
+        # ── 1) HARD TP ceiling ───────────────────────────────────────────────
         if tp_pct <= 0 and rmult >= hard_r:
             execute.close_position(p)
             log.info("🎯 +%.2fR (เพดาน %.1fR) → ปิด %s (#%s)", rmult, hard_r, p.symbol, p.ticket)
             _state.pop(p.ticket, None)
             continue
 
-        # 2) ถึง +PARTIAL_AT_R ครั้งแรก → เลื่อน SL เท่าทุน (+ ปิดบางส่วน เฉพาะโหมด R-based)
-        if not st["partial"] and rmult >= partial_at:
-            if tp_pct <= 0:                          # โหมด price-% TP ไม่ปิดบางส่วน (ปล่อยวิ่งถึงเป้า)
+        # ── 2) Partial close ที่ PARTIAL_AT_R (ล็อกกำไรก้อนแรก) ───────────
+        if not st["partial_done"] and rmult >= partial_at:
+            if tp_pct <= 0:          # โหมด price-% TP ไม่ปิดบางส่วน
                 half = _round_vol(p.volume * ratio, p.symbol)
                 if 0 < half < p.volume:
                     if execute.close_position(p, half).get("ok"):
-                        log.info("💰 ปิดบางส่วน %.2f lot ที่ +%.2fR %s", half, rmult, p.symbol)
-            if execute.modify_sltp(p.ticket, p.price_open, p.tp):
-                log.info("🛡️ เลื่อน SL เท่าทุน (+%.2fR) %s", rmult, p.symbol)
-            st["partial"] = True
+                        log.info("💰 ปิดบางส่วน %.2f lot ที่ +%.2fR %s (SL ยังที่เดิม รอ %.1fR ค่อยบังทุน)",
+                                 half, rmult, p.symbol, breakeven_at)
+            st["partial_done"] = True
+            # *** ไม่ขยับ SL ทันที — รอถึง BREAKEVEN_AT_R ก่อน ให้ราคามีพื้นที่หายใจ ***
             continue
 
-        # 3) trailing SL แบบ ATR-aware (เฉพาะ R-based · โหมด price-% TP ปล่อยไม้วิ่งถึงเป้า %)
-        # dist = max(R-based, ATR-based) → ถ้าตลาดผันผวนเพิ่ม SL จะถ่างกว้างขึ้นตาม (ไม่โดน noise)
-        if tp_pct <= 0 and st["partial"]:
-            atr_now = _current_atr(p.symbol)
+        # ── 3) เลื่อน SL เท่าทุน ที่ BREAKEVEN_AT_R (แยกจาก partial) ─────
+        if st["partial_done"] and not st["breakeven_done"] and rmult >= breakeven_at:
+            if execute.modify_sltp(p.ticket, p.price_open, p.tp):
+                log.info("🛡️ เลื่อน SL เท่าทุน (+%.2fR ≥ %.1fR) %s — trailing จะเริ่มหลังนี้",
+                         rmult, breakeven_at, p.symbol)
+            st["breakeven_done"] = True
+            continue
+
+        # ── 4) Reversal exit (optional) — ปิดก่อนชน SL ถ้าเจอ candle กลับตัว ─
+        if (use_rev_exit and st["partial_done"] and rmult >= rev_min_r
+                and not st.get("rev_checked_bar")):
+            direction = "buy" if is_buy else "sell"
+            if _has_reversal_candle(p.symbol, direction, rev_tf):
+                if execute.close_position(p).get("ok"):
+                    log.info("🔄 Reversal candle %s (+%.2fR) → ปิดก่อนกำไรหาย %s (#%s)",
+                             rev_tf, rmult, p.symbol, p.ticket)
+                    _state.pop(p.ticket, None)
+                    continue
+            # throttle: เช็ค reversal แค่ครั้งเดียวต่อแท่ง (กันยิงซ้ำ)
+            import MetaTrader5 as _m5
+            _last = _m5.copy_rates_from_pos(p.symbol, _m5.TIMEFRAME_M5, 0, 1)
+            if _last is not None and len(_last) > 0:
+                st["rev_checked_bar"] = int(_last[0]["time"])
+        elif use_rev_exit and st.get("rev_checked_bar"):
+            # รีเซ็ต flag เมื่อขึ้นแท่งใหม่
+            import MetaTrader5 as _m5
+            _last = _m5.copy_rates_from_pos(p.symbol, _m5.TIMEFRAME_M5, 0, 1)
+            if _last is not None and len(_last) > 0:
+                if int(_last[0]["time"]) != st["rev_checked_bar"]:
+                    st.pop("rev_checked_bar", None)
+
+        # ── 5) Trailing SL — เริ่มหลัง breakeven เท่านั้น ─────────────────
+        # dist = max(R×factor, ATR×factor) ป้องกัน noise ในตลาดผันผวน
+        if tp_pct <= 0 and st["breakeven_done"]:
+            atr_now = _current_atr(p.symbol, "M15")
             dist = max(R * tfac, atr_now * tfac) if atr_now > 0 else R * tfac
             eps = cur * 1e-6
             if is_buy:
                 new_sl = cur - dist
-                if new_sl > (p.sl or 0) + eps:                  # ขยับขึ้นเท่านั้น (ล็อกกำไร)
+                if new_sl > (p.sl or 0) + eps:
                     execute.modify_sltp(p.ticket, new_sl, p.tp)
             else:
                 new_sl = cur + dist
-                if p.sl == 0 or new_sl < p.sl - eps:            # ขยับลงเท่านั้น
+                if p.sl == 0 or new_sl < p.sl - eps:
                     execute.modify_sltp(p.ticket, new_sl, p.tp)
 
+    # ── ล้าง state ของไม้ที่ปิดไปแล้ว ──────────────────────────────────────
     for t in list(_state):
         if t not in alive:
             _state.pop(t, None)

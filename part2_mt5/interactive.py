@@ -513,6 +513,7 @@ def _help_text() -> str:
         "/insights — 🧠 บทเรียน: เทคนิคไหนได้เงินจริง (บอทเรียนรู้จากผลจริง)\n"
         "/pause — ⏸️ หยุดเปิดไม้ใหม่ชั่วคราว (ไม้เก่ายังจัดการต่อ)\n"
         "/resume — ▶️ กลับมาเปิดไม้อัตโนมัติ\n"
+        "/reset_daily — 🔄 รีเซ็ตโควต้าขาดทุนต่อวัน (นับใหม่จากตอนนี้)\n"
         "/closeall — 🧹 ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)\n"
         "/update — ⬇️ ดึงโค้ดใหม่จาก GitHub แล้ว restart (ใช้ทุกครั้งที่อัปเดต)\n"
         "/stop — 🛑 หยุดบอท (ไม้ที่เปิดอยู่ยังคงเปิดใน MT5)\n"
@@ -808,6 +809,7 @@ def main():
     counter = 0
     recent: dict = {}
     daily_halt = False
+    _daily_pnl_baseline = 0.0   # PnL ณ ตอนที่ reset_daily ล่าสุด — นับขาดทุนจากจุดนี้
     disconnected = False
     prev_open = 0          # นับไม้เปิด รอบก่อน — ถ้าลดลง = มีไม้ปิด → สแกนหาตัวใหม่ทันที
     last_scan_key = None   # กันส่งสรุปสแกนซ้ำ (ถ้าผลเหมือนเดิม)
@@ -856,6 +858,17 @@ def main():
                         except Exception:  # noqa: BLE001
                             pass
                         tg.send_text(token, chat, learn.edge_report())
+                    elif cmd == "reset_daily":
+                        # รีเซ็ตโควต้าขาดทุนต่อวัน — นับใหม่จาก PnL ปัจจุบัน
+                        try:
+                            _daily_pnl_baseline = journal.today_pnl()
+                        except Exception:  # noqa: BLE001
+                            _daily_pnl_baseline = 0.0
+                        daily_halt = False
+                        tg.send_text(token, chat,
+                                     f"🔄 รีเซ็ตโควต้าขาดทุนวันนี้แล้ว\n"
+                                     f"นับขาดทุนใหม่จาก ${_daily_pnl_baseline:.2f} · เพดาน {max_daily_loss}%\n"
+                                     "บอทกลับมาเปิดไม้ได้แล้ว ✅")
                     elif cmd == "pause":
                         _set_pause(True)
                         tg.send_text(token, chat, "⏸️ หยุดเปิดไม้ใหม่แล้ว — ไม้ที่เปิดอยู่ยังจัดการต่อ (พิมพ์ /resume เพื่อเริ่มใหม่)")
@@ -988,12 +1001,14 @@ def main():
                 _state["last_digest"] = _today
                 _save_state(_state)
 
-            # 2.7) เบรกขาดทุนต่อวัน
+            # 2.7) เบรกขาดทุนต่อวัน — นับจาก _daily_pnl_baseline (reset ได้ด้วย /reset_daily)
             if bal > 0:
-                dpnl = journal.today_pnl()
+                dpnl = journal.today_pnl() - _daily_pnl_baseline
                 if dpnl <= -(bal * max_daily_loss / 100.0):
                     if not daily_halt:
-                        tg.send_text(token, chat, f"🛑 หยุดเทรดวันนี้ — ขาดทุน ${dpnl:.2f} ถึงเพดาน {max_daily_loss}% (จัดการไม้เก่าต่อ แต่ไม่เปิดใหม่)")
+                        tg.send_text(token, chat,
+                                     f"🛑 หยุดเทรดวันนี้ — ขาดทุน ${dpnl:.2f} ถึงเพดาน {max_daily_loss}%\n"
+                                     "ไม้เก่ายังจัดการต่อ · พิมพ์ /reset_daily ถ้าต้องการเปิดโควต้าใหม่")
                         daily_halt = True
                 elif daily_halt and dpnl > -(bal * max_daily_loss / 200.0):
                     daily_halt = False  # ฟื้นเมื่อขาดทุนลดลงครึ่งเพดาน
