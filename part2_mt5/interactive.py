@@ -1161,7 +1161,14 @@ def main():
                         tg.delete_msg(token, chat, pending["msg_id"])
                     pending = None
                 elif msg:
-                    cmd = (msg.get("text") or "").strip().lower().lstrip("/").split("@")[0]
+                    # แยก command (word แรก) และ args (ที่เหลือ) อย่างถูกต้อง
+                    # ก่อนหน้า: split("@")[0] ไม่ตัด space → cmd รวม args เข้าไปด้วย
+                    # ผล: elif cmd == "set" / "ai" ไม่ match → สองคำสั่งนี้ไม่เคยทำงาน
+                    _raw_text = (msg.get("text") or "").strip()
+                    _parts = _raw_text.split(None, 1)   # split ครั้งเดียวที่ whitespace แรก
+                    cmd = _parts[0].lstrip("/").lower().split("@")[0] if _parts else ""
+                    args = _parts[1].split() if len(_parts) > 1 else []
+                    _args_raw = _parts[1] if len(_parts) > 1 else ""  # รักษา case ของ KEY=VALUE
                     if cmd == "ping":
                         # health check — ตอบทันทีโดยไม่ต้องพึ่ง MT5 หรือ logic อื่น
                         import MetaTrader5 as _m5t
@@ -1202,7 +1209,7 @@ def main():
                                      "บอทกลับมาเปิดไม้ได้แล้ว ✅")
                     elif cmd == "set":
                         # /set KEY=VALUE — แก้ config โดยตรง ไม่ผ่าน AI
-                        raw_arg = " ".join(args).strip()
+                        raw_arg = _args_raw.strip()
                         if "=" not in raw_arg:
                             tg.send_text(token, chat,
                                          "⚙️ รูปแบบ: /set KEY=VALUE\n"
@@ -1222,7 +1229,7 @@ def main():
                                 tg.send_text(token, chat, f"❌ เขียน config ไม่สำเร็จ — ตรวจสอบ log")
                     elif cmd == "ai":
                         # /ai <คำขอภาษาธรรมชาติ> — Gemini แปลง → เปลี่ยน config อัตโนมัติ
-                        request_text = " ".join(args).strip()
+                        request_text = _args_raw.strip()
                         if not request_text:
                             tg.send_text(token, chat,
                                          "🤖 รูปแบบ: /ai <คำขอ>\n\n"
@@ -1361,6 +1368,10 @@ def main():
                                      f"{emo} · ปิดไม้ {d['symbol']} {d['volume']} lot{src_line}\n"
                                      f"💰 P/L ${d['profit']:+.2f}{pct}\n"
                                      f"📊 รวมวันนี้ ${day:+.2f}")
+                except Exception:  # noqa: BLE001
+                    pass
+                # learn แยก try — ไม่ให้ journal error กลบ outcome attachment
+                try:
                     learn.attach_outcomes()   # จับคู่ผลลัพธ์เข้าฟีเจอร์ (closed-loop เรียนรู้)
                 except Exception:  # noqa: BLE001
                     pass
@@ -1422,6 +1433,7 @@ def main():
             # กำหนด minimum 60s กัน MT5 connection กระพริบแล้วทำ force-rescan ซ้ำทุกรอบ
             if auto_on and open_n < prev_open and now - last_scan > 60:
                 last_scan = 0.0
+                last_scan_key = None  # reset เพื่อให้ Telegram ส่ง summary scan ใหม่หลังไม้ปิด
                 queue.clear()   # ล้าง queue เก่า — สัญญาณอาจ stale หลังจากไม้ปิด
                 log.info("มีไม้ปิด เหลือ %d ไม้ → สแกนใหม่ทันที (queue ล้างแล้ว)", open_n)
             prev_open = open_n

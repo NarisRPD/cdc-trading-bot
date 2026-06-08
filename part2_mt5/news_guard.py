@@ -33,7 +33,12 @@ def _fetch(api_key: str) -> list:
                 continue
             t = e.get("time") or ""
             try:
-                dt = datetime.strptime(t, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                # รองรับทั้ง "YYYY-MM-DD HH:MM:SS" (intraday) และ "YYYY-MM-DD" (all-day events)
+                # all-day events เช่น Fed meeting day ถ้าข้ามไปจะพลาดช่วง blackout สำคัญ
+                try:
+                    dt = datetime.strptime(t, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    dt = datetime.strptime(t, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 out.append((dt, e.get("event", "ข่าว US")))
             except Exception:  # noqa: BLE001
                 continue

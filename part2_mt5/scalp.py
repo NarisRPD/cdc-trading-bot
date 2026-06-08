@@ -1003,14 +1003,17 @@ def orb_session_signal(df, session: str = "london", range_bars: int = 3,
 
         now_utc   = _dt.now(_tz.utc)
         open_utc  = now_utc.replace(hour=open_h, minute=0, second=0, microsecond=0)
-        close_utc = open_utc + pd.Timedelta(minutes=trade_window_min)
+        # ใช้ datetime.timedelta แทน pd.Timedelta เพราะ open_utc เป็น datetime.datetime
+        # pd.Timedelta + datetime → pd.Timestamp ซึ่งเปรียบต่างกับ datetime ได้แต่ fragile
+        from datetime import timedelta as _td
+        close_utc = open_utc + _td(minutes=trade_window_min)
 
         # ตรวจ trade window
         if not (open_utc <= now_utc <= close_utc):
             return {**_E, "reason": f"นอกหน้าต่าง {session} open"}
 
         # Opening range
-        range_end = open_utc + pd.Timedelta(minutes=range_bars * 5)
+        range_end = open_utc + _td(minutes=range_bars * 5)
         rng = df[(df["utc"] >= open_utc) & (df["utc"] < range_end)]
         if len(rng) < range_bars:
             return {**_E, "reason": f"รอ opening range ({len(rng)}/{range_bars} bars)"}

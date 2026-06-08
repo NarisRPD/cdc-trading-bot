@@ -121,12 +121,14 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # TP คำนวณสองโหมด:
     # 1) ATR-based (TP_ATR_MULT > 0): TP = entry ± ATR × multiplier — สมจริง ปรับตามความผันผวน
     # 2) R:R-based (TP_ATR_MULT = 0, default): TP = entry ± SL_dist × TP_RR (เดิม)
+    # tp_rr ต้องกำหนดก่อนเสมอ — BRT/IBB/TLP ที่อยู่ด้านล่างต้องใช้ tp_rr ด้วย
+    # ถ้า TP_ATR_MULT > 0 → ATR-based TP แต่ tp_rr ยังต้องมีค่าไว้เป็น fallback
+    tp_rr = float(cfg.get("TP_RR", "2.0"))
     tp_atr_mult = float(cfg.get("TP_ATR_MULT", "0") or "0")
     if tp_atr_mult > 0 and atr > 0:
         tp = spot + tp_atr_mult * atr if direction == "buy" else spot - tp_atr_mult * atr
         log.debug("TP ATR-based %s: %.5f (%.1f×ATR %.5f)", exsym, tp, tp_atr_mult, atr)
     else:
-        tp_rr = float(cfg.get("TP_RR", "2.0"))        # TP = ระยะ SL × ค่านี้
         lv = risk.build_levels(spot, sl, tp_rr=tp_rr)
         tp = lv["tp"]
     # ต้นตำรับ 3BP: TP = ความยาวแท่ง1 (ถ้าเปิด USE_3BP_TP และยังให้ R:R คุ้ม >= MIN_RR)
@@ -340,8 +342,10 @@ def format_ticket(t: dict) -> str:
         conf.append("📦 Inside-Bar Breakout")
     if t.get("tlp", {}).get("detected"):
         conf.append("📐 2-Leg Pullback")
-    conf.append(t["structure"].get("label"))
-    lines.append("ยืนยัน: " + " · ".join(conf))
+    _struct_label = t["structure"].get("label")
+    if _struct_label:
+        conf.append(_struct_label)
+    lines.append("ยืนยัน: " + " · ".join(c for c in conf if c))
     _sr = t.get("sr") or {}
     if t["direction"] == "buy" and _sr.get("near_resistance"):
         lines.append("⚠️ ใกล้แนวต้าน — ระวังเด้งลง")
