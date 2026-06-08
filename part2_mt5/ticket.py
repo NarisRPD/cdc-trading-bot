@@ -62,10 +62,11 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # ใช้ TF ที่ตรงกับเทคนิค ไม่ใช้ ENTRY_TF เสมอ
     # เหตุผล: UT Bot M15 ควรเช็ค RSI บน M15 ไม่ใช่ H1 (entry_tf อาจต่างกัน)
     _rsi_tf_map = {
-        "supertrend": cfg.get("ST_TF",  "H1"),
-        "halftrend":  cfg.get("HT_TF",  "H1"),
-        "utbot":      cfg.get("UTB_TF", "M15"),
-        "pa":         cfg.get("PA_TF",  "H1"),    # Price Action ใช้ TF เดียวกับที่สแกน
+        "supertrend": cfg.get("ST_TF",    "H1"),
+        "halftrend":  cfg.get("HT_TF",    "H1"),
+        "utbot":      cfg.get("UTB_TF",   "M15"),
+        "pa":         cfg.get("PA_TF",    "H1"),
+        "ema_m5":     cfg.get("EMA_M5_TF", "M5"),  # EMA Ribbon scalp ตรวจ RSI บน TF เดียวกัน
     }
     rsi_tf = _rsi_tf_map.get(bias.get("source", ""), entry_tf)   # fallback → entry_tf
     if rsi_tf.upper() != entry_tf.upper():
@@ -117,9 +118,17 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         if side_ok and abs(spot - cand) >= 0.3 * bp_atr:    # กัน SL แคบเกินจนโดน noise เขี่ย
             sl = cand
 
-    tp_rr = float(cfg.get("TP_RR", "2.0"))            # TP = ระยะ SL × ค่านี้ (สอดคล้อง SL อัตโนมัติ)
-    lv = risk.build_levels(spot, sl, tp_rr=tp_rr)
-    tp = lv["tp"]
+    # TP คำนวณสองโหมด:
+    # 1) ATR-based (TP_ATR_MULT > 0): TP = entry ± ATR × multiplier — สมจริง ปรับตามความผันผวน
+    # 2) R:R-based (TP_ATR_MULT = 0, default): TP = entry ± SL_dist × TP_RR (เดิม)
+    tp_atr_mult = float(cfg.get("TP_ATR_MULT", "0") or "0")
+    if tp_atr_mult > 0 and atr > 0:
+        tp = spot + tp_atr_mult * atr if direction == "buy" else spot - tp_atr_mult * atr
+        log.debug("TP ATR-based %s: %.5f (%.1f×ATR %.5f)", exsym, tp, tp_atr_mult, atr)
+    else:
+        tp_rr = float(cfg.get("TP_RR", "2.0"))        # TP = ระยะ SL × ค่านี้
+        lv = risk.build_levels(spot, sl, tp_rr=tp_rr)
+        tp = lv["tp"]
     # ต้นตำรับ 3BP: TP = ความยาวแท่ง1 (ถ้าเปิด USE_3BP_TP และยังให้ R:R คุ้ม >= MIN_RR)
     if tbp.get("detected") and cfg.get("USE_3BP_TP", "false").lower() in ("1", "true", "yes", "on"):
         b1 = tbp.get("bar1_range")

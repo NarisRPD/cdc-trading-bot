@@ -472,6 +472,97 @@ def utbot_signal(df, key_value: float = 1.0, atr_period: int = 10,
             "reason": f"UT Bot crossover {flip_bar} แท่งที่แล้ว → {direction.upper()} (TS={round(ts_val, 4)})"}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# #5 EMA Ribbon Scalp (M5) — กลยุทธ์ scalp 5-10 นาที ระดับ prop firm
+#
+# ใช้โดย: SMB Capital, T3 Trading, Warrior Trading (New York prop desks)
+# หลักการ: EMA 8 ตัด EMA 21 = momentum shift + RSI ยืนยัน momentum zone
+#   - เข้าเมื่อ EMA fast ตัด EMA slow ใน N แท่งล่าสุด
+#   - RSI 40-65 = "momentum zone" (มีแรงพอ แต่ไม่ extreme)
+#   - ไม่รอ H1 flip → ตอบสนองเร็ว เหมาะ 5-10 นาที
+#   - SL: 1×ATR(M5) ใต้/เหนือ EMA slow (แน่นกว่า H1 strategies)
+#   - TP: 2×ATR(M5) หรือ ปรับตาม TP_ATR_MULT ใน config
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ema_ribbon_signal(df, fast: int = 8, slow: int = 21,
+                      rsi_min: float = 40.0, rsi_max: float = 65.0,
+                      fresh_bars: int = 3, sl_atr_mult: float = 1.0) -> dict:
+    """EMA 8/21 Cross Signal (M5) — กลยุทธ์ scalp ระดับ professional
+    ใช้ใน prop firms: EMA fast ตัด slow + RSI momentum zone (40-65)
+    fresh_bars: รับสัญญาณที่เกิดใน N แท่งล่าสุด (กัน stale signal)
+    sl_atr_mult: SL = EMA slow ± N×ATR (default 1.0 = แน่นเหมาะ scalp)"""
+    import numpy as np
+    if df is None or len(df) < slow + fresh_bars + 15:
+        return {"detected": False}
+
+    close = df["close"].astype(float).values
+    high  = df["high"].astype(float).values
+    low   = df["low"].astype(float).values
+
+    # ── EMA fast/slow (Wilder / pandas-style exponential) ─────────────────
+    alpha_f = 2.0 / (fast + 1)
+    alpha_s = 2.0 / (slow + 1)
+    ef = np.empty(len(close)); ef[0] = close[0]
+    es = np.empty(len(close)); es[0] = close[0]
+    for i in range(1, len(close)):
+        ef[i] = alpha_f * close[i] + (1 - alpha_f) * ef[i - 1]
+        es[i] = alpha_s * close[i] + (1 - alpha_s) * es[i - 1]
+
+    # ── หา EMA cross ใน fresh_bars แท่งล่าสุด ──────────────────────────
+    direction = None
+    for i in range(1, fresh_bars + 2):
+        if i + 1 >= len(ef):
+            break
+        was_bull = ef[-i - 1] > es[-i - 1]  # แท่งก่อนหน้า
+        now_bull = ef[-i] > es[-i]           # แท่งที่ i จากปัจจุบัน
+        if not was_bull and now_bull:
+            direction = "buy"; break
+        if was_bull and not now_bull:
+            direction = "sell"; break
+    if direction is None:
+        return {"detected": False}
+
+    # ── RSI(14) — ต้องอยู่ใน momentum zone ────────────────────────────
+    d = np.diff(close)
+    up = np.where(d > 0, d, 0.0)
+    dn = np.where(d < 0, -d, 0.0)
+    avg_up = np.convolve(up, np.ones(14) / 14, mode="valid")[-1]
+    avg_dn = np.convolve(dn, np.ones(14) / 14, mode="valid")[-1]
+    rsi = 100.0 - 100.0 / (1.0 + avg_up / avg_dn) if avg_dn > 0 else 50.0
+    if not (rsi_min <= rsi <= rsi_max):
+        return {"detected": False}
+
+    # ── ATR(14) ────────────────────────────────────────────────────────
+    prev_c = np.roll(close, 1); prev_c[0] = close[0]
+    tr = np.maximum(high[1:] - low[1:],
+                    np.maximum(np.abs(high[1:] - close[:-1]),
+                               np.abs(low[1:] - close[:-1])))
+    atr = float(tr[-14:].mean()) if len(tr) >= 14 else float(tr.mean())
+
+    cur = close[-1]
+    es_val = es[-1]   # EMA slow = base สำหรับ SL
+    if direction == "buy":
+        sl = round(min(es_val, cur) - sl_atr_mult * atr, 5)
+        if sl >= cur:
+            return {"detected": False}
+    else:
+        sl = round(max(es_val, cur) + sl_atr_mult * atr, 5)
+        if sl <= cur:
+            return {"detected": False}
+
+    return {
+        "detected": True,
+        "direction": direction,
+        "entry": round(cur, 5),
+        "sl": sl,
+        "atr": round(atr, 5),
+        "rsi": round(rsi, 1),
+        "ema_fast": round(float(ef[-1]), 5),
+        "ema_slow": round(float(es_val), 5),
+        "reason": f"EMA {fast}/{slow} cross → {direction.upper()} · RSI {rsi:.0f}",
+    }
+
+
 def vpoc(df, bin_atr_mult: float = 0.03) -> dict:
     """
     Volume Profile จาก OHLCV DataFrame → หา VPOC + Value Area (VAH/VAL)

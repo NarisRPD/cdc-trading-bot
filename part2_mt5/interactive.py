@@ -41,6 +41,7 @@ _SRC_MAP = {
     "utbot":      "🤖 UT Bot",
     "hybrid":     "🔀 Hybrid-Pro",
     "scalp":      "⚡ EMA+Stoch",
+    "ema_m5":     "🎯 EMA Ribbon M5",
     "fx_orb":     "🌅 FX ORB",
     "pa":         "📐 Price Action",
 }
@@ -306,6 +307,62 @@ def _scan_hybrid(cfg, broker: set) -> list:
                      "scalp": {"sl": sig["sl"], "tp": sig["tp"], "tag": "Hybrid-Pro"}}, None))
     if out:
         log.info("Hybrid-Pro: เจอ %d สัญญาณ", len(out))
+    return out
+
+
+def _scan_ema_m5(cfg, broker: set) -> list:
+    """#6 EMA Ribbon Scalp (M5) — กลยุทธ์ scalp 5-10 นาที สำหรับ FX คู่ volume สูง
+    ใช้โดย prop firms ระดับโลก (SMB Capital, T3 Trading): EMA 8/21 cross + RSI momentum zone
+    - สแกนเฉพาะ FX pairs ที่ระบุใน FX_SCALP_SYMBOLS (default: major pairs)
+    - TF: M5 (default) หรือ M1 ตาม EMA_M5_TF
+    - เข้าเมื่อ EMA fast ตัด slow + RSI อยู่ใน momentum zone (40-65)
+    - SL: 1×ATR(M5) ใต้/เหนือ EMA slow — แน่นเหมาะ scalp ออกไวถ้ากราฟเสียทรง"""
+    import scalp as _scalp
+    import market_hours
+    import pandas as pd
+    tf      = cfg.get("EMA_M5_TF",    "M5")
+    fast    = int(cfg.get("EMA_FAST",  "8"))
+    slow    = int(cfg.get("EMA_SLOW", "21"))
+    rsi_min = float(cfg.get("EMA_RSI_MIN", "40"))
+    rsi_max = float(cfg.get("EMA_RSI_MAX", "65"))
+    fresh   = int(cfg.get("EMA_FRESH_BARS", "3"))
+    sl_mult = float(cfg.get("EMA_SL_ATR",  "1.0"))
+    rr      = float(cfg.get("EMA_M5_RR",   "2.0"))
+
+    # FX pairs ที่จะสแกน — default: 4 major pairs volume สูงสุด
+    _raw_syms = cfg.get("FX_SCALP_SYMBOLS", "EURUSD,GBPUSD,USDJPY,AUDUSD").strip()
+    _want_fx = {s.strip() for s in _raw_syms.split(",") if s.strip()}
+
+    stale_min = 20   # M5 bar stale กว่า 20 นาที = ตลาดปิดหรือ off-hours → ข้าม
+    out = []
+    from symbol_map import resolve
+    for core_sym in _want_fx:
+        sym = resolve(core_sym, broker)
+        if not sym:
+            continue
+        # ตรวจว่าเป็น FX จริง
+        if market_hours.category(sym) != "fx":
+            continue
+        df = m.rates(sym, tf, 200)
+        if df is None or len(df) < slow + 20 or "time" not in df.columns:
+            continue
+        try:
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _scalp.ema_ribbon_signal(df, fast=fast, slow=slow,
+                                       rsi_min=rsi_min, rsi_max=rsi_max,
+                                       fresh_bars=fresh, sl_atr_mult=sl_mult)
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "source": "ema_m5",
+                     "st_value": sig.get("ema_slow"), "rsi": sig.get("rsi"),
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"EMA {fast}/{slow} {tf}"}}, None))
+    if out:
+        log.info("ema_m5(%s): เจอ %d สัญญาณ FX", tf, len(out))
     return out
 
 
@@ -762,6 +819,7 @@ def main():
     use_halftrend  = cfg.get("USE_HALFTREND",  "true").lower() in ("1", "true", "yes", "on")   # HalfTrend H1
     use_utbot      = cfg.get("USE_UTBOT",      "true").lower() in ("1", "true", "yes", "on")   # UT Bot M15
     use_ema_stoch  = cfg.get("USE_EMA_STOCH", "false").lower() in ("1", "true", "yes", "on")   # scalp EMA+Stoch M15
+    use_ema_m5     = cfg.get("USE_EMA_M5",   "false").lower() in ("1", "true", "yes", "on")   # EMA Ribbon M5 FX scalp (prop firm strategy)
     use_fx_orb = cfg.get("USE_FX_ORB", "false").lower() in ("1", "true", "yes", "on")        # Asian-London ORB เฉพาะ FX
     use_hybrid = cfg.get("USE_HYBRID_PRO", "false").lower() in ("1", "true", "yes", "on")    # Hybrid-Pro (H1 trend + M15 pullback)
     use_pa     = cfg.get("USE_PA", "false").lower() in ("1", "true", "yes", "on")           # Price Action & Market Structure H1
@@ -1062,6 +1120,8 @@ def main():
                             queue += _scan_utbot(cfg, syms)
                         if use_ema_stoch and auto_on:      # EMA+Stoch M15
                             queue += _scan_scalp(cfg, syms)
+                        if use_ema_m5 and auto_on:         # EMA Ribbon M5 — FX scalp (prop firm strategy)
+                            queue += _scan_ema_m5(cfg, syms)
                         if use_fx_orb and auto_on:         # FX ORB London
                             queue += _scan_fx_orb(cfg, syms)
                         if use_hybrid and auto_on:         # Hybrid-Pro H1+M15
