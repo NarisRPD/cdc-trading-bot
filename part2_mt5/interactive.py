@@ -44,6 +44,10 @@ _SRC_MAP = {
     "ema_m5":     "🎯 EMA Ribbon M5",
     "fx_orb":     "🌅 FX ORB",
     "pa":         "📐 Price Action",
+    "vwap":       "🌊 VWAP Bounce",
+    "bb_squeeze": "🎸 BB Squeeze",
+    "rsi_div":    "📉 RSI Divergence",
+    "orb_pro":    "🕐 ORB Session",
 }
 _TRADE_META = os.path.join(os.path.dirname(__file__), "part2_trade_meta.json")
 _TRADE_META_MAX = 500   # เก็บแค่ N รายการล่าสุด (กันไฟล์ใหญ่เกิน)
@@ -363,6 +367,151 @@ def _scan_ema_m5(cfg, broker: set) -> list:
                                "tag": f"EMA {fast}/{slow} {tf}"}}, None))
     if out:
         log.info("ema_m5(%s): เจอ %d สัญญาณ FX", tf, len(out))
+    return out
+
+
+def _scan_vwap(cfg, broker: set) -> list:
+    """VWAP Bounce scanner — สแกน watchlist ทั้งหมด บน M5 (ต้องการ 300 bars = ข้อมูลต้นวัน)
+    ราคา pullback มาแตะ VWAP แล้วเด้งออก = สถาบันรับ/ขายที่ราคายุติธรรม"""
+    import scalp as _scalp, pandas as pd
+    tf       = cfg.get("VWAP_TF",      "M5")
+    std_ent  = float(cfg.get("VWAP_STD_ENTRY", "0.5"))
+    std_sl   = float(cfg.get("VWAP_STD_SL",    "1.5"))
+    rsi_min  = float(cfg.get("VWAP_RSI_MIN",   "35"))
+    rsi_max  = float(cfg.get("VWAP_RSI_MAX",   "65"))
+    rr       = float(cfg.get("VWAP_RR",        "2.0"))
+    stale_min = 20 if tf in ("M1", "M5") else 60
+    out = []
+    for sym in _watchlist(cfg, broker):
+        df = m.rates(sym, tf, 300)     # 300 bars M5 = ~25 ชั่วโมง (ครอบ VWAP ต้นวัน)
+        if df is None or len(df) < 30 or "time" not in df.columns:
+            continue
+        try:
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _scalp.vwap_bounce_signal(df, std_entry=std_ent, std_sl=std_sl,
+                                        rsi_min=rsi_min, rsi_max=rsi_max)
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "source": "vwap",
+                     "st_value": sig.get("vwap"), "rsi": sig.get("rsi"),
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"VWAP Bounce {tf}"}}, None))
+    if out:
+        log.info("VWAP(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
+def _scan_bb_squeeze(cfg, broker: set) -> list:
+    """BB Squeeze Breakout scanner — สแกน watchlist ทั้งหมด บน M5
+    BB แคบลง (ตลาดนิ่ง) → จับ momentum burst ที่ออกมา + volume ยืนยัน"""
+    import scalp as _scalp, pandas as pd
+    tf         = cfg.get("BB_TF",             "M5")
+    bb_period  = int(cfg.get("BB_PERIOD",      "20"))
+    bb_std     = float(cfg.get("BB_STD",       "2.0"))
+    bb_sq_lb   = int(cfg.get("BB_SQUEEZE_LOOKBACK", "50"))
+    vol_mult   = float(cfg.get("BB_VOL_MULT",  "1.2"))
+    rr         = float(cfg.get("BB_RR",        "2.0"))
+    stale_min  = 20 if tf in ("M1", "M5") else 60
+    need_bars  = bb_period + bb_sq_lb + 10
+    out = []
+    for sym in _watchlist(cfg, broker):
+        df = m.rates(sym, tf, need_bars + 20)
+        if df is None or len(df) < need_bars or "time" not in df.columns:
+            continue
+        try:
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _scalp.bb_squeeze_signal(df, bb_period=bb_period, bb_std_mult=bb_std,
+                                       squeeze_lookback=bb_sq_lb, volume_min_mult=vol_mult)
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "source": "bb_squeeze",
+                     "st_value": sig.get("bb_mid"), "rsi": None,
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"BB Squeeze {tf}"}}, None))
+    if out:
+        log.info("BB Squeeze(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
+def _scan_rsi_div(cfg, broker: set) -> list:
+    """RSI Divergence scanner — สแกน watchlist ทั้งหมด บน M5
+    ราคาไปต่อแต่ momentum ลดลง = จุดกลับตัวระยะสั้น"""
+    import scalp as _scalp, pandas as pd
+    tf         = cfg.get("RSI_DIV_TF",       "M5")
+    rsi_period = int(cfg.get("RSI_DIV_PERIOD",  "14"))
+    lookback   = int(cfg.get("RSI_DIV_LOOKBACK", "30"))
+    swing_str  = int(cfg.get("RSI_DIV_SWING",    "2"))
+    rr         = float(cfg.get("RSI_DIV_RR",    "2.0"))
+    stale_min  = 20 if tf in ("M1", "M5") else 60
+    need_bars  = rsi_period + lookback + 15
+    out = []
+    for sym in _watchlist(cfg, broker):
+        df = m.rates(sym, tf, need_bars + 20)
+        if df is None or len(df) < need_bars or "time" not in df.columns:
+            continue
+        try:
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _scalp.rsi_divergence_signal(df, rsi_period=rsi_period,
+                                           lookback=lookback, swing_strength=swing_str)
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "source": "rsi_div",
+                     "st_value": None, "rsi": sig.get("rsi"),
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"RSI {sig.get('div_type','div')} {tf}"}}, None))
+    if out:
+        log.info("RSI Div(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
+def _scan_orb_pro(cfg, broker: set) -> list:
+    """Opening Range Breakout (Toby Crabel) — สแกน FX pairs เท่านั้น
+    รองรับ London (07 UTC) และ NY (13 UTC) session ผ่าน ORB_SESSION config
+    ORB_SESSION=both → รันทั้ง 2 session"""
+    import scalp as _scalp, market_hours, pandas as pd
+    sessions_raw = cfg.get("ORB_SESSION", "london").lower().strip()
+    sessions     = ["london", "ny"] if sessions_raw == "both" else [sessions_raw]
+    range_bars   = int(cfg.get("ORB_RANGE_BARS",  "3"))
+    window_min   = int(cfg.get("ORB_WINDOW_MIN",  "90"))
+    rr           = float(cfg.get("ORB_RR",        "1.5"))
+    stale_min    = 20
+    out = []
+    for session in sessions:
+        for sym in _watchlist(cfg, broker):
+            # ORB เหมาะกับ FX เท่านั้น (ตลาดมี session open ชัดเจน)
+            if market_hours.category(sym) != "fx":
+                continue
+            df = m.rates(sym, "M5", 200)
+            if df is None or len(df) < 30 or "time" not in df.columns:
+                continue
+            try:
+                last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > stale_min:
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+            sig = _scalp.orb_session_signal(df, session=session,
+                                            range_bars=range_bars, trade_window_min=window_min)
+            if not sig.get("detected"):
+                continue
+            out.append(({"symbol": sym, "direction": sig["direction"], "source": "orb_pro",
+                         "st_value": None, "rsi": None,
+                         "scalp": {"sl": sig["sl"], "rr": rr,
+                                   "tag": f"ORB {session.upper()}"}}, None))
+    if out:
+        log.info("ORB Pro: เจอ %d สัญญาณ", len(out))
     return out
 
 
@@ -822,7 +971,11 @@ def main():
     use_ema_m5     = cfg.get("USE_EMA_M5",   "false").lower() in ("1", "true", "yes", "on")   # EMA Ribbon M5 FX scalp (prop firm strategy)
     use_fx_orb = cfg.get("USE_FX_ORB", "false").lower() in ("1", "true", "yes", "on")        # Asian-London ORB เฉพาะ FX
     use_hybrid = cfg.get("USE_HYBRID_PRO", "false").lower() in ("1", "true", "yes", "on")    # Hybrid-Pro (H1 trend + M15 pullback)
-    use_pa     = cfg.get("USE_PA", "false").lower() in ("1", "true", "yes", "on")           # Price Action & Market Structure H1
+    use_pa        = cfg.get("USE_PA",        "false").lower() in ("1", "true", "yes", "on")  # Price Action & Market Structure H1
+    use_vwap      = cfg.get("USE_VWAP",      "false").lower() in ("1", "true", "yes", "on")  # VWAP Bounce M5
+    use_bb_squeeze= cfg.get("USE_BB_SQUEEZE","false").lower() in ("1", "true", "yes", "on")  # BB Squeeze Breakout M5
+    use_rsi_div   = cfg.get("USE_RSI_DIV",   "false").lower() in ("1", "true", "yes", "on")  # RSI Divergence M5
+    use_orb_pro   = cfg.get("USE_ORB_PRO",   "false").lower() in ("1", "true", "yes", "on")  # ORB London/NY session
     max_pos = int(cfg.get("MAX_OPEN_POSITIONS", "5"))
     notify_scan = cfg.get("NOTIFY_SCAN", "false").lower() in ("1", "true", "yes", "on")
     max_dd = float(cfg.get("MAX_DRAWDOWN_PCT", "0") or "0")        # เบรกขาดทุนสะสม (0=ปิด)
@@ -1128,6 +1281,14 @@ def main():
                             queue += _scan_hybrid(cfg, syms)
                         if use_pa:                         # Price Action & Market Structure H1
                             queue += _scan_pa(cfg, syms)
+                        if use_vwap and auto_on:           # VWAP Bounce M5 (Jane Street / Citadel)
+                            queue += _scan_vwap(cfg, syms)
+                        if use_bb_squeeze and auto_on:     # BB Squeeze Breakout M5
+                            queue += _scan_bb_squeeze(cfg, syms)
+                        if use_rsi_div and auto_on:        # RSI Divergence M5
+                            queue += _scan_rsi_div(cfg, syms)
+                        if use_orb_pro and auto_on:        # ORB London/NY session (Toby Crabel)
+                            queue += _scan_orb_pro(cfg, syms)
                         last_scan = now
                         log.info("สแกนได้ %d ตัวมีทิศ", len(queue))
                     if auto_on:

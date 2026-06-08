@@ -713,3 +713,355 @@ def hybrid_pro(df, rr: float = 2.5, rsi_lo: float = 40, rsi_hi: float = 60,
                     "sl": sl, "tp": round(c - rr * (sl - c), 5),
                     "reason": "Hybrid-Pro: H1 ขาลง + เด้ง EMA20 + RSI 40-60 + แท่งกลับตัว"}
     return {"detected": False}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCALP SUITE — 4 กลยุทธ์ระดับ prop firm / institutional (5-10 นาที)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def vwap_bounce_signal(df, std_entry: float = 0.5, std_sl: float = 1.5,
+                       rsi_period: int = 14, rsi_min: float = 35.0,
+                       rsi_max: float = 65.0) -> dict:
+    """VWAP Bounce Signal — Jane Street / Citadel institutional style
+
+    ราคายุติธรรมของวัน (VWAP) = จุดที่สถาบันมักรับ/ขาย
+    - ราคาวิ่งออกห่าง VWAP > std_entry × σ แล้ว pullback กลับมาแตะ VWAP
+    - แท่งปัจจุบันเด้งออกจาก VWAP band → เข้า
+    - SL: std_sl × σ อีกฝั่ง (ถ้า VWAP ถูกทะลุจริงๆ สัญญาณเสีย)
+
+    df: M5 OHLCV ตั้งแต่ต้นวัน (แนะนำ 300 bars — ให้ VWAP มีข้อมูลเพียงพอ)
+    Returns: {detected, direction, entry, sl, vwap, std, rsi, reason}"""
+    _E = {"detected": False}
+    try:
+        if not hasattr(df, "columns"):
+            df = pd.DataFrame(df)
+        if len(df) < 20:
+            return _E
+
+        df = df.copy()
+        # แปลง time → UTC datetime สำหรับ daily reset
+        if not pd.api.types.is_datetime64_any_dtype(df["time"]):
+            df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        df["date"] = df["time"].dt.date
+        today = df["date"].max()
+        ddf = df[df["date"] == today].copy()
+        if len(ddf) < 5:
+            ddf = df.copy()    # fallback: ใช้ทั้งหมดถ้าวันนี้มีแท่งน้อย
+
+        # VWAP = Σ(typical_price × volume) / Σ(volume) — reset ทุกวัน
+        ddf["tp"]  = (ddf["high"] + ddf["low"] + ddf["close"]) / 3.0
+        vol_col    = "tick_volume" if "tick_volume" in ddf.columns else "volume"
+        ddf["vol"] = ddf[vol_col].replace(0, 1).astype(float)
+        ddf["vwap"] = (ddf["tp"] * ddf["vol"]).cumsum() / ddf["vol"].cumsum()
+
+        # σ = rolling std ของ (typical_price - VWAP) — วัด "ห่างแค่ไหน"
+        win = min(20, max(5, len(ddf) // 2))
+        ddf["sigma"] = (ddf["tp"] - ddf["vwap"]).rolling(win, min_periods=3).std().bfill()
+        ddf["sigma"] = ddf["sigma"].clip(lower=1e-10)
+
+        cur_vwap   = float(ddf["vwap"].iloc[-1])
+        cur_sigma  = float(ddf["sigma"].iloc[-1])
+        cur_close  = float(ddf["close"].iloc[-1])
+        prev_close = float(ddf["close"].iloc[-2]) if len(ddf) >= 2 else cur_close
+
+        # สัญญาณ bounce: ราคาเคยอยู่นอก band แล้วกลับมาข้าม band กลับ
+        upper = cur_vwap + std_entry * cur_sigma
+        lower = cur_vwap - std_entry * cur_sigma
+        direction = None
+        if prev_close > upper and cur_close <= upper:
+            direction = "sell"
+        elif prev_close < lower and cur_close >= lower:
+            direction = "buy"
+        if not direction:
+            return _E
+
+        # RSI — กัน overbought/oversold ที่อาจทำให้ false bounce
+        closes = df["close"].values.astype(float)
+        rp = min(rsi_period, len(closes) - 2)
+        if rp < 3:
+            return _E
+        d = np.diff(closes[-(rp + 2):])
+        ag = np.where(d > 0, d, 0.0)[-rp:].mean()
+        al = np.where(d < 0, -d, 0.0)[-rp:].mean()
+        rsi = 100.0 - (100.0 / (1.0 + ag / al)) if al > 1e-12 else 50.0
+        if not (rsi_min <= rsi <= rsi_max):
+            return {**_E, "reason": f"RSI {rsi:.0f} ออกนอก zone {rsi_min}-{rsi_max}"}
+
+        entry = cur_close
+        sl = (cur_vwap - std_sl * cur_sigma) if direction == "buy" else (cur_vwap + std_sl * cur_sigma)
+        return {
+            "detected":  True,
+            "direction": direction,
+            "entry":     entry,
+            "sl":        sl,
+            "vwap":      cur_vwap,
+            "std":       cur_sigma,
+            "rsi":       rsi,
+            "reason":    f"VWAP bounce {direction} · RSI {rsi:.0f} · σ={cur_sigma:.5f}",
+        }
+    except Exception:  # noqa: BLE001
+        return _E
+
+
+def bb_squeeze_signal(df, bb_period: int = 20, bb_std_mult: float = 2.0,
+                      squeeze_lookback: int = 50,
+                      volume_min_mult: float = 1.2) -> dict:
+    """Bollinger Band Squeeze Breakout — momentum hedge fund style
+
+    BB แคบลง (volatility ต่ำ = ตลาดพักตัว) → จับ momentum burst ที่ออกมา
+    - Squeeze: BB width ต่ำสุดใน squeeze_lookback bars ใน 3 bars ล่าสุด
+    - Breakout: ราคาทะลุ upper/lower BB ทันทีหลัง squeeze
+    - Volume ยืนยัน: volume > avg × volume_min_mult (กัน false breakout)
+    - SL: BB midline ± ATR (กลางแถบ → ถ้าทะลุกลับ สัญญาณเสีย)
+
+    Returns: {detected, direction, entry, sl, bb_upper, bb_lower, bb_mid, width, atr, reason}"""
+    _E = {"detected": False}
+    try:
+        if not hasattr(df, "columns"):
+            df = pd.DataFrame(df)
+        n = len(df)
+        if n < bb_period + squeeze_lookback + 5:
+            return _E
+
+        closes = df["close"].values.astype(float)
+        highs  = df["high"].values.astype(float)
+        lows   = df["low"].values.astype(float)
+        vol_col = "tick_volume" if "tick_volume" in df.columns else "volume"
+        vols   = df[vol_col].values.astype(float)
+
+        # BB: rolling mean + std
+        mids   = np.array([closes[i - bb_period:i].mean() for i in range(bb_period, n + 1)])
+        stds_v = np.array([closes[i - bb_period:i].std()  for i in range(bb_period, n + 1)])
+        uppers = mids + bb_std_mult * stds_v
+        lowers = mids - bb_std_mult * stds_v
+        widths = (uppers - lowers) / (np.abs(mids) + 1e-10)
+
+        if len(widths) < squeeze_lookback + 3:
+            return _E
+
+        # squeeze ต้องเกิดใน 3 bars ล่าสุด (ก่อน current bar)
+        hist_w   = widths[-(squeeze_lookback + 3):-2]
+        recent_w = widths[-3:-1]
+        if recent_w.min() > hist_w.min():
+            return {**_E, "reason": "ไม่มี BB squeeze ใน recent bars"}
+
+        # ตรวจ breakout
+        cur_c = closes[-1]; prev_c2 = closes[-2]
+        cu = uppers[-1]; cl_bb = lowers[-1]; cm = mids[-1]
+        pu = uppers[-2]; pl = lowers[-2]
+        direction = None
+        if cur_c > cu and prev_c2 <= pu:
+            direction = "buy"
+        elif cur_c < cl_bb and prev_c2 >= pl:
+            direction = "sell"
+        if not direction:
+            return {**_E, "reason": "ราคายังใน BB"}
+
+        # volume ยืนยัน
+        avg_vol = vols[-(bb_period + 2):-1].mean()
+        if avg_vol > 0 and vols[-1] < avg_vol * volume_min_mult:
+            return {**_E, "reason": f"volume {vols[-1]:.0f} ไม่ยืนยัน (avg {avg_vol:.0f})"}
+
+        # ATR
+        pc = np.roll(closes, 1); pc[0] = closes[0]
+        tr = np.maximum(highs - lows, np.maximum(np.abs(highs - pc), np.abs(lows - pc)))
+        atr = tr[-14:].mean()
+
+        entry = cur_c
+        sl = (cm - atr) if direction == "buy" else (cm + atr)
+        return {
+            "detected":  True,
+            "direction": direction,
+            "entry":     entry,
+            "sl":        sl,
+            "bb_upper":  cu,
+            "bb_lower":  cl_bb,
+            "bb_mid":    cm,
+            "width":     float(widths[-1]),
+            "atr":       atr,
+            "reason":    f"BB squeeze breakout {direction} · width={widths[-1]:.4f}",
+        }
+    except Exception:  # noqa: BLE001
+        return _E
+
+
+def rsi_divergence_signal(df, rsi_period: int = 14, lookback: int = 30,
+                           swing_strength: int = 2) -> dict:
+    """RSI Divergence (Bearish/Bullish) M5 — discretionary trader standard
+
+    จับจุดกลับตัวก่อนคนอื่น: ราคาไปต่อ แต่ momentum ลดลง
+    - Bearish div: ราคา Higher High + RSI Lower High → แรงซื้อหมด → Short
+    - Bullish div: ราคา Lower Low + RSI Higher Low → แรงขายหมด → Long
+    - swing_strength: จำนวน bars ทั้ง 2 ข้างที่ต้องต่ำ/สูงกว่า pivot
+
+    Returns: {detected, direction, entry, sl, div_type, rsi, atr, reason}"""
+    _E = {"detected": False}
+    try:
+        if not hasattr(df, "columns"):
+            df = pd.DataFrame(df)
+        closes = df["close"].values.astype(float)
+        highs  = df["high"].values.astype(float)
+        lows   = df["low"].values.astype(float)
+        n = len(closes)
+        if n < rsi_period + lookback + 10:
+            return _E
+
+        # RSI series — Wilder's smoothing (เหมือน MT5 ใช้)
+        rsi_arr = np.full(n, 50.0)
+        d = np.diff(closes)
+        g = np.where(d > 0, d, 0.0)
+        l_arr = np.where(d < 0, -d, 0.0)
+        ag = g[:rsi_period].mean()
+        al = l_arr[:rsi_period].mean()
+        for i in range(rsi_period, len(d)):
+            ag = (ag * (rsi_period - 1) + g[i]) / rsi_period
+            al = (al * (rsi_period - 1) + l_arr[i]) / rsi_period
+            rsi_arr[i + 1] = 100.0 - (100.0 / (1.0 + ag / al)) if al > 1e-12 else 100.0
+
+        # หา swing highs/lows บน scope ล่าสุด
+        s = swing_strength
+        scope = lookback + s + 2
+        sh  = highs[-scope:]
+        sl3 = lows[-scope:]
+        sr  = rsi_arr[-scope:]
+        m2  = len(sh)
+
+        sh_list, sl_list = [], []
+        for i in range(s, m2 - s - 1):
+            if all(sh[i] >= sh[i - j] for j in range(1, s + 1)) and \
+               all(sh[i] >= sh[i + j] for j in range(1, s + 1)):
+                sh_list.append((i, sh[i], sr[i]))
+            if all(sl3[i] <= sl3[i - j] for j in range(1, s + 1)) and \
+               all(sl3[i] <= sl3[i + j] for j in range(1, s + 1)):
+                sl_list.append((i, sl3[i], sr[i]))
+
+        direction = None; div_type = ""; rsi_val = rsi_arr[-1]
+
+        # Bearish: ราคา HH + RSI LH
+        if len(sh_list) >= 2:
+            p1, p2 = sh_list[-2], sh_list[-1]
+            if p2[1] > p1[1] and p2[2] < p1[2] and (m2 - p2[0]) <= 6:
+                direction = "sell"; div_type = "bearish"
+
+        # Bullish: ราคา LL + RSI HL
+        if not direction and len(sl_list) >= 2:
+            p1, p2 = sl_list[-2], sl_list[-1]
+            if p2[1] < p1[1] and p2[2] > p1[2] and (m2 - p2[0]) <= 6:
+                direction = "buy"; div_type = "bullish"
+
+        if not direction:
+            return {**_E, "reason": "ไม่เจอ divergence"}
+
+        pc = np.roll(closes, 1); pc[0] = closes[0]
+        tr  = np.maximum(highs - lows, np.maximum(np.abs(highs - pc), np.abs(lows - pc)))
+        atr = tr[-14:].mean()
+
+        entry = closes[-1]
+        sl4 = (entry - atr * 1.5) if direction == "buy" else (entry + atr * 1.5)
+        return {
+            "detected":  True,
+            "direction": direction,
+            "entry":     entry,
+            "sl":        sl4,
+            "div_type":  div_type,
+            "rsi":       rsi_val,
+            "atr":       atr,
+            "reason":    f"{div_type} divergence · RSI={rsi_val:.1f}",
+        }
+    except Exception:  # noqa: BLE001
+        return _E
+
+
+def orb_session_signal(df, session: str = "london", range_bars: int = 3,
+                       trade_window_min: int = 90) -> dict:
+    """Opening Range Breakout — Toby Crabel (1990) ใช้ใน hedge fund 30+ ปี
+
+    สร้าง opening range จาก N bars แรกของ session แล้วรอทะลุ
+    - London open: 07:00 UTC · NY open: 13:00 UTC
+    - range_bars × 5 นาที = ความกว้างกรอบ (3 bars = 15 นาที)
+    - trade_window_min: ปิดโอกาสหลัง N นาที (กัน false breakout ตอนบ่าย)
+    - กัน late entry: bars ก่อนทะลุไปแล้ว → ไม่เข้า
+
+    df: M5 OHLCV ตั้งแต่ก่อน session open (แนะนำ 200 bars)
+    Returns: {detected, direction, entry, sl, range_high, range_low, range_size, atr, reason}"""
+    _E = {"detected": False}
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        _SESSION_H = {"london": 7, "ny": 13, "asia": 0, "tokyo": 0}
+        open_h = _SESSION_H.get(session.lower(), 7)
+
+        if not hasattr(df, "columns"):
+            df = pd.DataFrame(df)
+        if len(df) < range_bars + 5:
+            return _E
+
+        df = df.copy()
+        if not pd.api.types.is_datetime64_any_dtype(df["time"]):
+            df["utc"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        else:
+            df["utc"] = df["time"].dt.tz_localize("UTC") if df["time"].dt.tz is None else df["time"]
+
+        now_utc   = _dt.now(_tz.utc)
+        open_utc  = now_utc.replace(hour=open_h, minute=0, second=0, microsecond=0)
+        close_utc = open_utc + pd.Timedelta(minutes=trade_window_min)
+
+        # ตรวจ trade window
+        if not (open_utc <= now_utc <= close_utc):
+            return {**_E, "reason": f"นอกหน้าต่าง {session} open"}
+
+        # Opening range
+        range_end = open_utc + pd.Timedelta(minutes=range_bars * 5)
+        rng = df[(df["utc"] >= open_utc) & (df["utc"] < range_end)]
+        if len(rng) < range_bars:
+            return {**_E, "reason": f"รอ opening range ({len(rng)}/{range_bars} bars)"}
+
+        range_high = float(rng["high"].max())
+        range_low  = float(rng["low"].min())
+        range_size = range_high - range_low
+
+        closes = df["close"].values.astype(float)
+        highs  = df["high"].values.astype(float)
+        lows   = df["low"].values.astype(float)
+        pc = np.roll(closes, 1); pc[0] = closes[0]
+        tr = np.maximum(highs - lows, np.maximum(np.abs(highs - pc), np.abs(lows - pc)))
+        atr = tr[-14:].mean()
+
+        if atr > 0 and range_size < atr * 0.3:
+            return {**_E, "reason": f"range {range_size:.5f} เล็กเกิน"}
+
+        post = df[df["utc"] >= range_end]
+        if len(post) == 0:
+            return {**_E, "reason": "รอ bars หลัง opening range"}
+
+        # กัน late entry
+        if len(post) > 1:
+            prev_p = post.iloc[:-1]
+            if (prev_p["close"] > range_high).any() or (prev_p["close"] < range_low).any():
+                return {**_E, "reason": "ทะลุ range ไปแล้ว (late entry)"}
+
+        cur_c   = float(post["close"].iloc[-1])
+        prev_c2 = float(post["close"].iloc[-2]) if len(post) >= 2 else float(df["close"].iloc[-2])
+
+        direction = None
+        if cur_c > range_high and prev_c2 <= range_high:
+            direction = "buy"
+        elif cur_c < range_low and prev_c2 >= range_low:
+            direction = "sell"
+        if not direction:
+            return {**_E, "reason": f"ราคา {cur_c:.5f} ยังใน range"}
+
+        entry = cur_c
+        sl5 = (range_low - atr * 0.3) if direction == "buy" else (range_high + atr * 0.3)
+        return {
+            "detected":   True,
+            "direction":  direction,
+            "entry":      entry,
+            "sl":         sl5,
+            "range_high": range_high,
+            "range_low":  range_low,
+            "range_size": range_size,
+            "atr":        atr,
+            "reason":     f"ORB {session} {direction} · range={range_size:.5f}",
+        }
+    except Exception:  # noqa: BLE001
+        return _E
