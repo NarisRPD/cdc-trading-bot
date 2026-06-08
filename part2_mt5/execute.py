@@ -46,17 +46,36 @@ def place_order(exsym: str, direction: str, lots: float, sl: float, tp: float,
 
 
 def modify_sltp(ticket: int, sl: float, tp: float) -> bool:
-    """แก้ SL/TP ของ position (ใช้เลื่อน SL เท่าทุน/trailing)"""
+    """แก้ SL/TP ของ position (ใช้เลื่อน SL เท่าทุน/trailing)
+    ⚠️ MT5 TRADE_ACTION_SLTP ต้องมี "symbol" ไม่งั้น reject เงียบ (retcode 10013)"""
     import MetaTrader5 as m5
-    res = m5.order_send({"action": m5.TRADE_ACTION_SLTP, "position": int(ticket),
-                         "sl": float(sl), "tp": float(tp)})
-    return res is not None and res.retcode == m5.TRADE_RETCODE_DONE
+    # ดึง symbol จาก position — จำเป็นสำหรับ TRADE_ACTION_SLTP
+    pos_info = m5.positions_get(ticket=int(ticket))
+    if not pos_info:
+        log.warning("modify_sltp: ไม่พบ position #%d", ticket)
+        return False
+    sym = pos_info[0].symbol
+    res = m5.order_send({
+        "action":   m5.TRADE_ACTION_SLTP,
+        "position": int(ticket),
+        "symbol":   sym,
+        "sl":       float(sl),
+        "tp":       float(tp),
+    })
+    if res is None:
+        log.warning("modify_sltp #%d %s: order_send None — %s", ticket, sym, m5.last_error())
+        return False
+    ok = res.retcode == m5.TRADE_RETCODE_DONE
+    if not ok:
+        log.warning("modify_sltp #%d %s: retcode=%d %s", ticket, sym, res.retcode, res.comment)
+    return ok
 
 
 def close_position(pos, volume: float = None) -> dict:
     """ปิด position (ทั้งหมดถ้า volume=None หรือบางส่วนถ้าระบุ) — market opposite"""
     import MetaTrader5 as m5
-    vol = float(volume) if volume else float(pos.volume)
+    # ใช้ `is not None` ไม่ใช่ `if volume` — volume=0.0 เป็น falsy แต่หมายความต่างกัน
+    vol = float(volume) if volume is not None else float(pos.volume)
     is_buy = pos.type == m5.POSITION_TYPE_BUY
     tick = m5.symbol_info_tick(pos.symbol)
     if tick is None:

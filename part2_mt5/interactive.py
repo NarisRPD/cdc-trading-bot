@@ -53,7 +53,7 @@ def _cfg_write(key: str, value: str) -> bool:
     try:
         with open(_CFG_FILE, "r", encoding="utf-8") as f:
             content = f.read()
-        # backup ก่อนแก้ (เขียนทับ .bak ครั้งล่าสุด)
+        # backup ก่อนแก้
         with open(_CFG_FILE + ".bak", "w", encoding="utf-8") as f:
             f.write(content)
         pattern = re.compile(rf"^{re.escape(key)}\s*=.*$", re.MULTILINE)
@@ -61,8 +61,11 @@ def _cfg_write(key: str, value: str) -> bool:
             new_content = pattern.sub(f"{key}={value}", content)
         else:
             new_content = content.rstrip("\n") + f"\n{key}={value}\n"
-        with open(_CFG_FILE, "w", encoding="utf-8") as f:
+        # atomic write: เขียน .tmp ก่อน แล้ว replace — crash กลางทางไม่ทำให้ config เสีย
+        _tmp = _CFG_FILE + ".tmp"
+        with open(_tmp, "w", encoding="utf-8") as f:
             f.write(new_content)
+        os.replace(_tmp, _CFG_FILE)   # atomic บน Windows (same drive)
         log.info("cfg_write: %s=%s", key, value)
         return True
     except Exception as e:  # noqa: BLE001

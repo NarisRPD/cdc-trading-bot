@@ -15,7 +15,8 @@ from datetime import datetime, timedelta, timezone
 # UTC+7 (ไทย) — explicit เพื่อให้ถูกต้องบน VPS ทุก timezone
 _TZ_THAI = timezone(timedelta(hours=7))
 
-_CRYPTO = ("BTC", "ETH", "XRP", "LTC", "BCH", "SOL", "ADA", "DOGE", "BNB", "DOT",
+_CRYPTO = ("BTC", "XBT",  # Bitcoin (MT5 standard + Kraken-style)
+           "ETH", "XRP", "LTC", "BCH", "SOL", "ADA", "DOGE", "BNB", "DOT",
            "LINK", "XLM", "TRX", "SHIB", "AVAX", "MATIC", "UNI", "ATOM", "NEAR", "APT")
 _US_INDEX = ("US30", "US500", "USTEC", "NAS", "SPX", "USTECH", "USIDX")
 _COMMOD = ("XAU", "XAG", "XPT", "XPD", "XCU", "USOIL", "UKOIL", "XNG", "XBR", "XTI", "XNGUSD")

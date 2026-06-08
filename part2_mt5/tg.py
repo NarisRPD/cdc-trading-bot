@@ -12,9 +12,15 @@ _API = "https://api.telegram.org/bot{token}/{method}"
 
 
 def _call(token: str, method: str, timeout: int = 35, **params):
-    import requests
+    import requests, time as _t
     try:
         r = requests.post(_API.format(token=token, method=method), json=params, timeout=timeout)
+        # Telegram rate limit (429) — รอตามที่ API บอก แล้ว retry ครั้งเดียว
+        if r.status_code == 429:
+            retry_after = r.json().get("parameters", {}).get("retry_after", 5)
+            log.warning("tg %s: rate limit 429 → รอ %ds", method, retry_after)
+            _t.sleep(min(retry_after, 30))   # รอไม่เกิน 30s กัน loop หยุดนาน
+            r = requests.post(_API.format(token=token, method=method), json=params, timeout=timeout)
         j = r.json()
         if not j.get("ok"):
             log.warning("tg %s → %s", method, j.get("description"))

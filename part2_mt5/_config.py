@@ -16,9 +16,10 @@ def load(path: str = "config.env") -> dict:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                # ตัด inline comment เช่น  KEY=180  # หมายเหตุ  → เก็บแค่ 180
-                if " #" in v:
-                    v = v[: v.index(" #")]
+                # ตัด inline comment: รองรับทั้ง "VALUE # note" และ "VALUE#note"
+                # ใช้ regex แทน string find เพื่อรองรับทุกรูปแบบ
+                import re as _re
+                v = _re.sub(r'\s*#.*$', '', v)
                 if v.strip():                # ไม่เก็บ empty value — ให้ cfg.get() fallback ไป default ได้
                     cfg[k.strip()] = v.strip()
     for k in list(cfg):           # env override (เผื่อ set ชั่วคราว)
