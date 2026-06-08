@@ -60,20 +60,31 @@ def assess(ctx: dict, api_key: Optional[str] = None, memory: str = "") -> dict:
         return {"decision": "manual", "confidence": None, "risks": [],
                 "reason": "ไม่มี Gemini key — ให้ผู้เทรดตรวจเอง"}
     mem = ("\n\nความจำจากผลเทรดจริงที่ผ่านมา (ใช้ปรับน้ำหนัก ไม่ใช่กฎตายตัว): " + memory) if memory else ""
+    # ระบุ strategy type จาก ctx เพื่อปรับ prompt ให้ตรงกลุ่ม
+    _src = ctx.get("source", "")
+    _is_scalp = _src in ("ema_m5", "vwap", "bb_squeeze", "rsi_div", "orb_pro", "fx_orb", "scalp")
+    _scalp_note = (
+        "นี่คือ scalp trade (M5/M15) — ไม่ต้องการ trend ยาว แค่ momentum ระยะสั้น 30-90 นาที "
+        "อย่าปฏิเสธเพราะ H1/D1 sideways — TF สั้นมีอิสระ "
+    ) if _is_scalp else ""
     prompt = (
-        "คุณเป็น risk manager มืออาชีพ ตรวจ 'ก่อนเข้าไม้' โดยทำหน้าที่ทนายฝ่ายตรงข้าม "
-        "หาเหตุผลว่าไม้นี้อาจแพ้/ไม่ควรเข้า จากข้อมูลจริงเท่านั้น (ห้ามทำนายราคา ห้ามแต่งข้อมูล) "
-        "พิจารณา: ยืดเกิน/ไล่ของแพง, สวนเทรนด์ใหญ่ (Stage), R:R ไม่คุ้ม, เทรนด์ขรุขระ (R² ต่ำ), "
-        "วอลุ่มไม่ยืนยัน, ชนแนวต้าน/รับ, สัญญาณแท่งเทียนขัดทิศ. "
-        "ถ้ามีความจำจากผลเทรดจริง ให้ใช้เป็นน้ำหนักประกอบการตัดสิน (แต่ไม่ใช่กฎตายตัว เพราะตลาดเปลี่ยนได้). "
-        "ตัดสิน decision: enter (เข้าได้) / small (เข้าไม้เล็ก ความเสี่ยงสูง) / skip (ข้าม) "
-        "พร้อม confidence 0-100, risks (ลิสต์ความเสี่ยงที่เจอ), reason (เหตุผลสั้นไทย). "
-        "ตอบ JSON ตาม schema:\n" + json.dumps(ctx, ensure_ascii=False) + mem
+        "คุณเป็น prop firm risk manager ประเมินไม้เทรดนี้ **อย่างเป็นกลาง** "
+        "ชั่งน้ำหนักทั้ง 2 ด้าน: โอกาสที่จะชนะ vs ความเสี่ยงที่จะแพ้ "
+        f"{_scalp_note}"
+        "ห้ามทำนายราคา ห้ามแต่งข้อมูล ใช้ข้อมูลที่ให้มาเท่านั้น "
+        "เกณฑ์: enter = สัญญาณดี risk/reward คุ้ม · small = สัญญาณพอใช้ risk สูงกว่าปกติ · "
+        "skip = สัญญาณขัดแย้งหนัก หรือ R:R ไม่คุ้มเลย "
+        "⚠️ ต้องตอบ enter หรือ small บ้าง — skip ทุกไม้คือ overcautious ไม่ใช่ risk management ที่ดี "
+        "ถ้ามีความจำจากผลเทรดจริง ให้ใช้ประกอบ (ไม่ใช่กฎตายตัว). "
+        "ตอบ JSON ตาม schema — decision, confidence 0-100, risks[], reason (ภาษาไทยสั้น):\n"
+        + json.dumps(ctx, ensure_ascii=False) + mem
     )
     for model in (_MODEL, _FALLBACK):
         out = _call(prompt, key, model)
         if out is not None:
-            out.setdefault("decision", "manual")
+            out.setdefault("decision", "small")  # fallback default = small (ไม่บล็อก trade)
             return out
-    return {"decision": "manual", "confidence": None, "risks": [],
-            "reason": "Gemini ใช้ไม่ได้ตอนนี้ — ให้ผู้เทรดตรวจเอง"}
+    # Gemini ใช้ไม่ได้ → ใช้ small (lot ครึ่ง) แทนที่จะ manual (บล็อกทุกไม้)
+    log.warning("Gemini API ใช้ไม่ได้ทั้ง 2 model → fallback small (เปิดไม้ครึ่งขนาด)")
+    return {"decision": "small", "confidence": 50, "risks": ["gemini_unavailable"],
+            "reason": "Gemini ใช้ไม่ได้ — เปิดไม้ครึ่งขนาดอัตโนมัติ"}

@@ -62,11 +62,21 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # ใช้ TF ที่ตรงกับเทคนิค ไม่ใช้ ENTRY_TF เสมอ
     # เหตุผล: UT Bot M15 ควรเช็ค RSI บน M15 ไม่ใช่ H1 (entry_tf อาจต่างกัน)
     _rsi_tf_map = {
+        # H1 strategies — ตรวจ RSI บน H1
         "supertrend": cfg.get("ST_TF",    "H1"),
         "halftrend":  cfg.get("HT_TF",    "H1"),
-        "utbot":      cfg.get("UTB_TF",   "M15"),
         "pa":         cfg.get("PA_TF",    "H1"),
-        "ema_m5":     cfg.get("EMA_M5_TF", "M5"),  # EMA Ribbon scalp ตรวจ RSI บน TF เดียวกัน
+        # M15 strategies
+        "utbot":      cfg.get("UTB_TF",   "M15"),
+        "hybrid":     "M15",
+        "scalp":      entry_tf,   # EMA+Stoch ใช้ entry_tf (M15 ตามค่าตั้งต้น)
+        # M5 scalp suite — ตรวจ RSI บน M5 เหมือน TF ที่ scanner ใช้
+        "ema_m5":     cfg.get("EMA_M5_TF", "M5"),
+        "vwap":       "M5",
+        "bb_squeeze": "M5",
+        "rsi_div":    "M5",
+        "orb_pro":    "M5",
+        "fx_orb":     "M5",
     }
     rsi_tf = _rsi_tf_map.get(bias.get("source", ""), entry_tf)   # fallback → entry_tf
     if rsi_tf.upper() != entry_tf.upper():
@@ -217,10 +227,15 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # crypto spread กว้างกว่า FX/commodity ตามธรรมชาติ → ใช้ threshold แยก asset class
     spread = (px["ask"] - px["bid"]) if (px and px.get("ask") and px.get("bid")) else 0.0
     spread_pct = (spread / spot * 100) if spot else 0.0
+    # spread threshold แยกตาม asset class — US stocks/indices spread ตามธรรมชาติกว้างกว่า FX
     if _sym_cat == "crypto":
         max_spread = float(cfg.get("MAX_SPREAD_PCT_CRYPTO", "1.0"))
+    elif _sym_cat == "us_stock":
+        max_spread = float(cfg.get("MAX_SPREAD_PCT_STOCK", "0.40"))   # US CFD spread ปกติ 0.1-0.35%
+    elif _sym_cat in ("us_index", "index"):
+        max_spread = float(cfg.get("MAX_SPREAD_PCT_INDEX", "0.20"))   # US30/US500 spread ปกติ 0.05-0.15%
     else:
-        max_spread = float(cfg.get("MAX_SPREAD_PCT", "0.15"))
+        max_spread = float(cfg.get("MAX_SPREAD_PCT", "0.15"))          # FX/commodity (ตัว spread แคบ)
     if spread_pct > max_spread:
         log.info("ข้าม %s — spread กว้าง %.3f%% > %.2f%% (%s)", exsym, spread_pct, max_spread, _sym_cat)
         return {"skipped": True, "exsym": exsym, "direction": direction,
