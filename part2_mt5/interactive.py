@@ -1498,8 +1498,12 @@ def main():
                             key = sym + dr
                             if now - recent.get(key, 0) < cooldown:
                                 continue
-                            # crypto blackout เพิ่มเติม (ช่วงบาง + options expiry)
+                            # ข้ามเงียบถ้าตลาดปิด — ไม่เพิ่มใน scan_res / ไม่เรียก build_ticket
+                            # (หุ้น US pre-market: spread 5–10× กว้างกว่าปกติ → ไม่มีประโยชน์ประมวล)
                             import market_hours   # ต้อง import ก่อนใช้ครั้งแรก (กัน UnboundLocalError จาก Python scoping)
+                            if not market_hours.is_open(sym):
+                                continue
+                            # crypto blackout เพิ่มเติม (ช่วงบาง + options expiry)
                             if market_hours.category(sym) == "crypto":
                                 c_blk, c_ev = news_guard.is_blackout_crypto(finnhub, blackout_min)
                                 if c_blk:
@@ -1557,6 +1561,8 @@ def main():
                                 continue
                             key = bias["symbol"] + bias["direction"]
                             if now - recent.get(key, 0) < cooldown:
+                                continue
+                            if not market_hours.is_open(bias["symbol"]):  # ตลาดปิด → ไม่เสนอ
                                 continue
                             # ส่ง scalp= เพื่อให้ build_ticket ใช้ SL/RR ของกลยุทธ์ (เหมือน auto mode)
                             t = tk.build_ticket(bias["symbol"], bias, acc_now, cfg, m, part1_hint=hint,

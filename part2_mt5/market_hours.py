@@ -1,12 +1,12 @@
 """
 part2_mt5/market_hours.py — เวลาเปิด-ปิดตลาดโดยประมาณ (เวลาไทย UTC+7)
 
-ใช้สำหรับฟีเจอร์ "TP ก่อนตลาดปิด": ตลาดหุ้น/โลหะ/FX/ดัชนี มีเวลาปิด (โดยเฉพาะสุดสัปดาห์)
+ใช้สำหรับฟีเจอร์ "TP ก่อนตลาดปิด" และ filter "ไม่สแกนตลาดปิด"
 ส่วนคริปโตเปิด 24 ชม. ไม่มีวันปิด → ใช้ SL/TP ปกติ
 
 *** MT5 Python ไม่มี session API → ใช้เวลามาตรฐาน (อาจคลาด ±1 ชม.ตาม DST) — ปรับ constant ได้ ***
-เวลาปิด (โดยประมาณ ช่วง summer/DST):
-  • หุ้น+ดัชนี US (NVDA/AAPL/US500/USTEC/US30): 16:00 ET ≈ 03:00 ไทย (อังคาร-เสาร์เช้า)
+เวลา (โดยประมาณ ช่วง summer/EDT UTC-4):
+  • หุ้น+ดัชนี US: เปิด 9:30 ET ≈ 20:30 ไทย  |  ปิด 16:00 ET ≈ 03:00 ไทย (winter: เปิด 21:30)
   • โลหะ/พลังงาน/FX/ดัชนีอื่น: ~24/5 ปิดจริงแค่สุดสัปดาห์ ศุกร์ 17:00 ET ≈ เสาร์ 04:00 ไทย
 """
 from __future__ import annotations
@@ -24,8 +24,9 @@ _EU_ASIA_IDX = ("DE30", "DE40", "UK100", "JP225", "HK50", "AUS200", "STOXX", "FR
 _CCY = ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "SGD", "HKD",
         "CNH", "SEK", "NOK", "DKK", "ZAR", "MXN", "TRY", "PLN", "CZK", "HUF")
 
-# เวลาปิด (เวลาไทย) — แก้ได้ถ้า DST เปลี่ยน
-US_CLOSE_H, US_CLOSE_M = 3, 0        # ตลาดหุ้น US ปิด ~03:00 ไทย
+# เวลาเปิด-ปิด (เวลาไทย UTC+7) — แก้ได้ถ้า DST เปลี่ยน
+US_OPEN_H,  US_OPEN_M  = 20, 30      # ตลาดหุ้น US เปิด ~20:30 ไทย (9:30 AM EDT summer; winter=21:30)
+US_CLOSE_H, US_CLOSE_M = 3,  0       # ตลาดหุ้น US ปิด ~03:00 ไทย (4:00 PM ET)
 WEEKEND_CLOSE_H, WEEKEND_CLOSE_M = 4, 0   # ปิดสุดสัปดาห์ ~เสาร์ 04:00 ไทย
 
 
@@ -88,6 +89,42 @@ def correlation_group(sym: str) -> str:
     if cat == "fx":
         return "FX"
     return "อื่นๆ"
+
+
+def is_open(sym: str, now: datetime = None) -> bool:
+    """ตลาดของ sym เปิดอยู่ตอนนี้ไหม (เวลาไทย UTC+7)
+
+    crypto      → True เสมอ (24/7)
+    FX/commodity/index  → True วันจันทร์-เสาร์เช้า (24/5)
+    หุ้น/ดัชนี US → เฉพาะ ~20:30–03:00 ไทย วันจันทร์-ศุกร์
+    """
+    if is_24h(sym):
+        return True
+    now = now or datetime.now(_TZ_THAI)
+    cat = category(sym)
+    wd = now.weekday()  # Mon=0 … Sun=6
+
+    # อาทิตย์ทั้งวัน → ปิดทุกตลาด
+    if wd == 6:
+        return False
+
+    if cat in ("us_stock", "us_index"):
+        t_close = _at(now, US_CLOSE_H, US_CLOSE_M)   # 03:00 ไทย
+        t_open  = _at(now, US_OPEN_H,  US_OPEN_M)    # 20:30 ไทย
+        if now < t_close:
+            # 00:00–03:00: ยังอยู่ในเซสชัน ET วันก่อน → เปิดถ้าเมื่อวานเป็นวันทำการ (อ–ส, wd 1–5)
+            return 1 <= wd <= 5
+        if now >= t_open:
+            # 20:30–23:59: เปิด US session → เปิดถ้าวันนี้เป็นวันทำการ (จ–ศ, wd 0–4)
+            return wd <= 4
+        # 03:00–20:30: ช่วงกลางวันไทย → ตลาด US ปิด
+        return False
+
+    # FX / commodity / EU+Asia index: 24/5
+    # เสาร์หลัง WEEKEND_CLOSE (04:00) = ปิดสนิท
+    if wd == 5:
+        return now < _at(now, WEEKEND_CLOSE_H, WEEKEND_CLOSE_M)
+    return True
 
 
 def closing_soon(sym: str, buffer_min: int, now: datetime = None) -> bool:

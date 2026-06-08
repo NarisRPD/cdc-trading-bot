@@ -37,6 +37,13 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # ประเภทสินทรัพย์ — ใช้ตลอด function (spread / RSI threshold)
     _sym_cat = market_hours.category(exsym)
 
+    # ตรวจตลาดเปิดอยู่ไหม — ข้ามเงียบถ้าปิด (ลด Gemini call + log noise)
+    # หุ้น US นอกเวลา: spread กว้าง 5–10× ปกติ → ไม่มีประโยชน์สแกน
+    if not market_hours.is_open(exsym):
+        log.debug("ข้าม %s — ตลาดปิด (%s)", exsym, _sym_cat)
+        return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                "reason": "ตลาดปิด"}
+
     # เกราะพอร์ตขั้นต่ำสำหรับโลหะ: ทอง/เงินไม้ขั้นต่ำ (0.01 lot) ใหญ่เกินพอร์ตเล็ก
     # → ปลดล็อกให้เทรดเมื่อพอร์ตถึงเกณฑ์ (GOLD_MIN_BALANCE / SILVER_MIN_BALANCE) อัตโนมัติ
     _u = exsym.upper()
@@ -231,11 +238,13 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     if _sym_cat == "crypto":
         max_spread = float(cfg.get("MAX_SPREAD_PCT_CRYPTO", "1.0"))
     elif _sym_cat == "us_stock":
-        max_spread = float(cfg.get("MAX_SPREAD_PCT_STOCK", "0.40"))   # US CFD spread ปกติ 0.1-0.35%
+        max_spread = float(cfg.get("MAX_SPREAD_PCT_STOCK", "0.40"))      # US CFD spread ปกติ 0.05-0.15%
     elif _sym_cat in ("us_index", "index"):
-        max_spread = float(cfg.get("MAX_SPREAD_PCT_INDEX", "0.20"))   # US30/US500 spread ปกติ 0.05-0.15%
+        max_spread = float(cfg.get("MAX_SPREAD_PCT_INDEX", "0.20"))      # US30/US500 spread ปกติ 0.03-0.10%
+    elif _sym_cat == "commodity":
+        max_spread = float(cfg.get("MAX_SPREAD_PCT_COMMODITY", "0.80"))  # Palladium/Platinum ~0.5-0.8% ปกติ
     else:
-        max_spread = float(cfg.get("MAX_SPREAD_PCT", "0.15"))          # FX/commodity (ตัว spread แคบ)
+        max_spread = float(cfg.get("MAX_SPREAD_PCT", "0.15"))            # FX เท่านั้น (spread แคบ ~0.01-0.05%)
     if spread_pct > max_spread:
         log.info("ข้าม %s — spread กว้าง %.3f%% > %.2f%% (%s)", exsym, spread_pct, max_spread, _sym_cat)
         return {"skipped": True, "exsym": exsym, "direction": direction,
