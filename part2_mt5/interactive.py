@@ -1113,8 +1113,19 @@ def main():
     last_journal = 0.0
     counter = 0
     recent: dict = {}
-    daily_halt = False
-    _daily_pnl_baseline = 0.0   # PnL ณ ตอนที่ reset_daily ล่าสุด — นับขาดทุนจากจุดนี้
+    # โหลด daily-halt state จาก _state (persist ผ่าน restart)
+    # ถ้า reset_daily ถูกเรียกวันนี้ → ใช้ baseline ที่บันทึกไว้ ไม่ใช่ 0
+    _today_iso = datetime.now().date().isoformat()
+    _state_baseline_date = _state.get("daily_pnl_baseline_date", "")
+    if _state_baseline_date == _today_iso:
+        _daily_pnl_baseline = float(_state.get("daily_pnl_baseline", 0) or 0)
+        daily_halt = bool(_state.get("daily_halt", False))
+        if daily_halt:
+            log.info("ดึง daily_halt=True จาก state (วันนี้เคย halt แล้ว)")
+    else:
+        # วันใหม่ หรือยังไม่เคย reset_daily — เริ่มนับจาก 0
+        daily_halt = False
+        _daily_pnl_baseline = 0.0
     disconnected = False
     prev_open = 0          # นับไม้เปิด รอบก่อน — ถ้าลดลง = มีไม้ปิด → สแกนหาตัวใหม่ทันที
     last_scan_key = None   # กันส่งสรุปสแกนซ้ำ (ถ้าผลเหมือนเดิม)
@@ -1180,6 +1191,11 @@ def main():
                         except Exception:  # noqa: BLE001
                             _daily_pnl_baseline = 0.0
                         daily_halt = False
+                        # บันทึก state ให้ persist ผ่าน restart — ไม่งั้น restart แล้ว halt ติดใหม่
+                        _state["daily_pnl_baseline"] = _daily_pnl_baseline
+                        _state["daily_pnl_baseline_date"] = datetime.now().date().isoformat()
+                        _state["daily_halt"] = False
+                        _save_state(_state)
                         tg.send_text(token, chat,
                                      f"🔄 รีเซ็ตโควต้าขาดทุนวันนี้แล้ว\n"
                                      f"นับขาดทุนใหม่จาก ${_daily_pnl_baseline:.2f} · เพดาน {max_daily_loss}%\n"
@@ -1377,8 +1393,14 @@ def main():
                                      f"🛑 หยุดเทรดวันนี้ — ขาดทุน ${dpnl:.2f} ถึงเพดาน {max_daily_loss}%\n"
                                      "ไม้เก่ายังจัดการต่อ · พิมพ์ /reset_daily ถ้าต้องการเปิดโควต้าใหม่")
                         daily_halt = True
+                        # บันทึก halt ลง state — ถ้า restart จะดึงกลับมา (ป้องกันหลบเพดานด้วยการ restart)
+                        _state["daily_halt"] = True
+                        _state["daily_pnl_baseline_date"] = datetime.now().date().isoformat()
+                        _save_state(_state)
                 elif daily_halt and dpnl > -(bal * max_daily_loss / 200.0):
                     daily_halt = False  # ฟื้นเมื่อขาดทุนลดลงครึ่งเพดาน
+                    _state["daily_halt"] = False
+                    _save_state(_state)
 
             # 3) หาโอกาสใหม่ (ถ้าไม่ halt · ไม่ pause · ไม่ใช่ช่วงข่าวแรง)
             open_n = _count_open() if auto_on else 0
