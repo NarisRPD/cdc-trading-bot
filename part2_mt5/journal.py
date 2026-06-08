@@ -34,7 +34,12 @@ def _save(data: list) -> None:
 
 
 def record_closed(days_back: int = 7) -> list:
-    """อ่านดีลปิด (DEAL_ENTRY_OUT) magic Part 2 ย้อนหลัง → บันทึกอันใหม่ คืน list ไม้ที่เพิ่งปิด (ใช้รายงาน Telegram)"""
+    """อ่านดีลปิด (DEAL_ENTRY_OUT) magic Part 2 ย้อนหลัง → บันทึกอันใหม่ คืน list ไม้ที่เพิ่งปิด (ใช้รายงาน Telegram)
+
+    แต่ละ entry มี: deal_id · symbol · time · profit · volume · position_id · direction · close_reason
+      direction    = "buy" / "sell" (ทิศทางของ position ที่ถูกปิด)
+      close_reason = "tp" / "sl" / "bot" / "manual"
+    """
     import MetaTrader5 as m5
     j = _load()
     seen = {t["deal_id"] for t in j}
@@ -44,18 +49,46 @@ def record_closed(days_back: int = 7) -> list:
     deals = m5.history_deals_get(_now - timedelta(days=days_back), _now + timedelta(minutes=1))
     if not deals:
         return []
+
+    # โหลด order history ครั้งเดียว → dict {ticket: order} สำหรับ lookup เหตุผลปิดไม้
+    # (ดีกว่า call API ซ้ำทุก deal)
+    _ord_map: dict = {}
+    try:
+        _all_ords = m5.history_orders_get(
+            _now - timedelta(days=days_back), _now + timedelta(minutes=1)
+        ) or []
+        _ord_map = {o.ticket: o for o in _all_ords}
+    except Exception:   # noqa: BLE001
+        pass            # ไม่มี order history → close_reason จะเป็น "manual" ทุกตัว
+
     new = []
     for d in deals:
         if d.magic != _MAGIC or d.entry != m5.DEAL_ENTRY_OUT or d.ticket in seen:
             continue
+
+        # ทิศทาง position ที่ปิด:
+        #   DEAL_TYPE_SELL (1) = ขายเพื่อปิด → position เดิมเป็น Buy
+        #   DEAL_TYPE_BUY  (0) = ซื้อเพื่อปิด → position เดิมเป็น Sell
+        direction = "buy" if d.type == m5.DEAL_TYPE_SELL else "sell"
+
+        # เหตุผลปิด: ดูจาก ORDER ที่ trigger deal นี้ (d.order = ticket ของ order นั้น)
+        # ORDER_REASON_TP=5, ORDER_REASON_SL=4, ORDER_REASON_EXPERT=3
+        close_reason = "manual"
+        _o = _ord_map.get(d.order)
+        if _o is not None:
+            if _o.reason == 5:   close_reason = "tp"     # TP hit
+            elif _o.reason == 4: close_reason = "sl"     # SL hit
+            elif _o.reason == 3: close_reason = "bot"    # EA/Script (manage.py ปิดเอง)
+
         entry = {"deal_id": d.ticket, "symbol": d.symbol, "time": d.time,
                  "profit": round(d.profit + d.commission + d.swap, 2), "volume": d.volume,
-                 "position_id": d.position_id}   # ใช้ lookup ชื่อเทคนิคจาก part2_trade_meta.json
+                 "position_id": d.position_id,            # ใช้ lookup ชื่อเทคนิคจาก part2_trade_meta.json
+                 "direction": direction, "close_reason": close_reason}
         j.append(entry)
         new.append(entry)
     if new:
         _save(j)
-        log.info("journal: บันทึกไม้ปิดใหม่ %d", len(new))
+        log.info("journal: บันทึกไม้ปิดใหม่ %d รายการ", len(new))
     return new
 
 

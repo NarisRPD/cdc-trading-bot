@@ -778,7 +778,8 @@ def _do_open(cfg, token, chat, p, execute_on: bool) -> None:
         # ใช้ position_ticket (ไม่ใช่ order ticket) — บน ECN อาจต่างกัน
         _pos_id = res.get("position_ticket") or res.get("ticket")
         learn.record_entry(_pos_id, t)             # เก็บฟีเจอร์ไว้เรียนรู้ภายหลัง
-        _save_trade_src(res["ticket"], (t.get("bias") or {}).get("source", ""))  # บันทึก ticket→technique
+        # ใช้ position_ticket เป็น key — ตรงกับ position_id ที่ journal.record_closed() ส่งกลับ
+        _save_trade_src(_pos_id, (t.get("bias") or {}).get("source", ""))
         tg.edit_text(token, chat, p["msg_id"], _summary(t) +
                      f"\n\n✅ เปิดออเดอร์แล้ว! #{res.get('ticket')} @ {res.get('price')}"
                      f"\nLot {sz['lots']} · SL/TP ตั้งให้แล้ว — MT5 จะปิดเองที่ TP/SL")
@@ -948,7 +949,8 @@ def _auto_open(cfg, token, chat, t, execute_on: bool) -> bool:
         # ใช้ position_ticket (ไม่ใช่ order ticket) — บน ECN อาจต่างกัน
         _pos_id = res.get("position_ticket") or res.get("ticket")
         learn.record_entry(_pos_id, t)             # เก็บฟีเจอร์ไว้เรียนรู้ภายหลัง
-        _save_trade_src(res["ticket"], (t.get("bias") or {}).get("source", ""))  # บันทึก ticket→technique
+        # ใช้ position_ticket เป็น key — ตรงกับ position_id ที่ journal.record_closed() ส่งกลับ
+        _save_trade_src(_pos_id, (t.get("bias") or {}).get("source", ""))
         tg.send_text(token, chat, _open_report(t, res))
         log.info("AUTO เปิด %s %s lot %s → #%s", t["exsym"], t["direction"], sz["lots"], res.get("ticket"))
         return True
@@ -1384,7 +1386,13 @@ def main():
                 try:
                     _meta = _load_trade_src()   # โหลดครั้งเดียวต่อรอบ journal
                     for d in journal.record_closed():
-                        emo = "✅ กำไร" if d["profit"] >= 0 else "🔴 ขาดทุน"
+                        emo = "✅" if d["profit"] >= 0 else "❌"
+                        dir_th = "🟢 Buy" if d.get("direction") == "buy" else "🔴 Sell"
+                        # เหตุผลปิด: TP / SL / Bot ปิดเอง / Manual
+                        _reason_map = {"tp": "🎯 TP", "sl": "🛑 SL",
+                                       "bot": "🤖 Bot", "manual": "✋ Manual"}
+                        reason_str = _reason_map.get(d.get("close_reason", ""), "")
+                        reason_line = f" · {reason_str}" if reason_str else ""
                         pct = (f" = {d['profit'] / bal * 100:+.2f}% ของทุน ${bal:,.0f}"
                                if bal and bal > 0 else "")
                         day = journal.today_pnl()
@@ -1393,11 +1401,11 @@ def main():
                         _src_label = _SRC_MAP.get(_src, "")
                         src_line = f"\n⚙️ {_src_label}" if _src_label else ""
                         tg.send_text(token, chat,
-                                     f"{emo} · ปิดไม้ {d['symbol']} {d['volume']} lot{src_line}\n"
+                                     f"{emo} ปิดไม้{reason_line} — {d['symbol']} {dir_th} {d['volume']} lot{src_line}\n"
                                      f"💰 P/L ${d['profit']:+.2f}{pct}\n"
                                      f"📊 รวมวันนี้ ${day:+.2f}")
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _je:  # noqa: BLE001
+                    log.warning("journal รายงานปิดไม้ fail: %s", _je)
                 # learn แยก try — ไม่ให้ journal error กลบ outcome attachment
                 try:
                     learn.attach_outcomes()   # จับคู่ผลลัพธ์เข้าฟีเจอร์ (closed-loop เรียนรู้)
