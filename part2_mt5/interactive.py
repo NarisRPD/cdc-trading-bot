@@ -34,6 +34,93 @@ log = logging.getLogger("part2.interactive")
 
 TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
+# ── path ของ config.env (อยู่ในโฟลเดอร์เดียวกับ script นี้) ─────────────────
+_CFG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
+
+# keys ที่ห้ามแสดงหรือแก้ผ่าน /set และ /ai (ป้องกัน secret รั่ว)
+_SECRET_KEYS = {"MT5_PASSWORD", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+                "GEMINI_API_KEY", "GEMINI_API_KEY_2", "FINNHUB_API_KEY"}
+
+
+def _cfg_write(key: str, value: str) -> bool:
+    """เขียน KEY=VALUE ลง config.env — update ถ้ามีแล้ว, append ถ้าไม่มี
+    ป้องกัน: ไม่แตะ secret keys, backup อัตโนมัติ"""
+    import re
+    key = key.strip().upper()
+    if key in _SECRET_KEYS:
+        log.warning("_cfg_write: ห้ามแก้ secret key %s ผ่าน Telegram", key)
+        return False
+    try:
+        with open(_CFG_FILE, "r", encoding="utf-8") as f:
+            content = f.read()
+        # backup ก่อนแก้ (เขียนทับ .bak ครั้งล่าสุด)
+        with open(_CFG_FILE + ".bak", "w", encoding="utf-8") as f:
+            f.write(content)
+        pattern = re.compile(rf"^{re.escape(key)}\s*=.*$", re.MULTILINE)
+        if pattern.search(content):
+            new_content = pattern.sub(f"{key}={value}", content)
+        else:
+            new_content = content.rstrip("\n") + f"\n{key}={value}\n"
+        with open(_CFG_FILE, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        log.info("cfg_write: %s=%s", key, value)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.error("_cfg_write failed: %s", e)
+        return False
+
+
+def _cfg_snapshot(cfg: dict) -> str:
+    """คืน config สำหรับส่งหา Gemini (ซ่อน secret, max 50 lines)"""
+    lines = []
+    for k, v in sorted(cfg.items()):
+        if k in _SECRET_KEYS:
+            continue
+        lines.append(f"{k}={v}")
+    return "\n".join(lines[:50])
+
+
+def _ai_cfg_edit(request: str, cfg: dict) -> list:
+    """ส่งคำขอภาษาธรรมชาติไป Gemini → รับ list ของ {key, value, reason}
+    ใช้ REST ตรง (ไม่ผ่าน gemini_gate.assess ซึ่ง schema ต่างกัน)"""
+    import json as _json, requests as _req
+    api_key = cfg.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return []
+    snap = _cfg_snapshot(cfg)
+    prompt = f"""คุณเป็น config editor ของ MT5 trading bot ที่รันอยู่บน Windows VPS
+
+คำขอ: "{request}"
+
+config ปัจจุบัน (ซ่อน secret):
+{snap}
+
+ตอบ JSON array เท่านั้น — ห้ามมีข้อความอื่น:
+[{{"key": "KEY_NAME", "value": "new_value", "reason": "เหตุผลสั้นๆ ภาษาไทย"}}]
+
+กฎ:
+- boolean ใช้ "true" หรือ "false" เท่านั้น
+- ตัวเลขส่งเป็น string เช่น "1.5"
+- ถ้าไม่แน่ใจว่า key ไหน หรือคำขอไม่ชัดเจน → return []
+- ห้ามแก้ key ที่เป็น password/token/secret"""
+    try:
+        model = "gemini-2.0-flash"
+        url   = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        body  = {"contents": [{"parts": [{"text": prompt}]}],
+                 "generationConfig": {"temperature": 0.1}}
+        r = _req.post(url, params={"key": api_key}, json=body, timeout=30)
+        if r.status_code != 200:
+            log.warning("_ai_cfg_edit Gemini error: %s", r.text[:120])
+            return []
+        raw = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # ตัด markdown code block ออกถ้ามี
+        if raw.startswith("```"):
+            raw = "\n".join(raw.split("\n")[1:]).rstrip("`").strip()
+        return _json.loads(raw)
+    except Exception as e:  # noqa: BLE001
+        log.warning("_ai_cfg_edit failed: %s", e)
+        return []
+
 # ── ชื่อเทคนิคสำหรับแสดงใน Telegram ────────────────────────────────
 _SRC_MAP = {
     "supertrend": "📈 SuperTrend",
@@ -725,6 +812,12 @@ def _help_text() -> str:
         "/stop — 🛑 หยุดบอท (ไม้ที่เปิดอยู่ยังคงเปิดใน MT5)\n"
         "/restart — 🔄 Restart บอท (ไม่ดึงโค้ดใหม่)\n"
         "/help — รายการคำสั่งนี้\n\n"
+        "⚙️ แก้ Config ผ่าน Telegram:\n"
+        "/set KEY=VALUE — ตั้งค่า config โดยตรง เช่น /set BREAKEVEN_AT_R=2.0\n"
+        "/ai <คำขอ> — ให้ AI แก้ config ด้วยภาษาธรรมชาติ\n"
+        "  ตัวอย่าง: /ai ปิด HalfTrend\n"
+        "  ตัวอย่าง: /ai เพิ่ม breakeven เป็น 2R และปิด notify scan\n"
+        "  ⚠️ ต้องพิมพ์ /restart หลังแก้ config ให้มีผล\n\n"
         "🔁 โหมด Auto: บอทสแกน → ตัดสินใจ → ยิงออเดอร์เอง → รายงานที่นี่\n"
         "   เปิดไม้ใหม่เมื่อผ่านด่าน: SuperTrend/HalfTrend/UT Bot/Price Action + แท่งเทียน/วอลุ่ม + Gemini + เกราะความเสี่ยง\n\n"
         "ℹ️ จัดการเอง: TP +2% ของราคา · +1R เลื่อน SL เท่าทุน · เลี่ยงข่าวแรง\n"
@@ -1080,6 +1173,58 @@ def main():
                                      f"🔄 รีเซ็ตโควต้าขาดทุนวันนี้แล้ว\n"
                                      f"นับขาดทุนใหม่จาก ${_daily_pnl_baseline:.2f} · เพดาน {max_daily_loss}%\n"
                                      "บอทกลับมาเปิดไม้ได้แล้ว ✅")
+                    elif cmd == "set":
+                        # /set KEY=VALUE — แก้ config โดยตรง ไม่ผ่าน AI
+                        raw_arg = " ".join(args).strip()
+                        if "=" not in raw_arg:
+                            tg.send_text(token, chat,
+                                         "⚙️ รูปแบบ: /set KEY=VALUE\n"
+                                         "ตัวอย่าง: /set BREAKEVEN_AT_R=2.0\n"
+                                         "         /set USE_HALFTREND=false\n\n"
+                                         "⚠️ พิมพ์ /restart หลังแก้ค่าให้มีผล")
+                        else:
+                            k, v = raw_arg.split("=", 1)
+                            k = k.strip().upper(); v = v.strip()
+                            if k in _SECRET_KEYS:
+                                tg.send_text(token, chat, f"🔒 ไม่อนุญาตแก้ {k} ผ่าน Telegram (secret key)")
+                            elif _cfg_write(k, v):
+                                tg.send_text(token, chat,
+                                             f"✅ บันทึกแล้ว: `{k}={v}`\n"
+                                             "⚠️ พิมพ์ /restart เพื่อให้ค่าใหม่มีผล")
+                            else:
+                                tg.send_text(token, chat, f"❌ เขียน config ไม่สำเร็จ — ตรวจสอบ log")
+                    elif cmd == "ai":
+                        # /ai <คำขอภาษาธรรมชาติ> — Gemini แปลง → เปลี่ยน config อัตโนมัติ
+                        request_text = " ".join(args).strip()
+                        if not request_text:
+                            tg.send_text(token, chat,
+                                         "🤖 รูปแบบ: /ai <คำขอ>\n\n"
+                                         "ตัวอย่าง:\n"
+                                         "  /ai ปิด HalfTrend\n"
+                                         "  /ai เพิ่ม breakeven เป็น 2R\n"
+                                         "  /ai เปิด VWAP และปิด notify scan\n"
+                                         "  /ai เปลี่ยน max risk เป็น 2%\n\n"
+                                         "⚠️ พิมพ์ /restart หลังแก้ให้มีผล")
+                        else:
+                            tg.send_text(token, chat, f"🤔 กำลังถาม Gemini... ({request_text[:40]})")
+                            changes = _ai_cfg_edit(request_text, cfg)
+                            if not changes:
+                                tg.send_text(token, chat,
+                                             "❓ Gemini ไม่แน่ใจว่าต้องแก้ค่าไหน\n"
+                                             "ลองพิมพ์ชัดขึ้น หรือใช้ /set KEY=VALUE โดยตรง")
+                            else:
+                                done, fail = [], []
+                                for ch in changes:
+                                    k = ch.get("key", "").upper()
+                                    v = str(ch.get("value", ""))
+                                    r = ch.get("reason", "")
+                                    if _cfg_write(k, v):
+                                        done.append(f"  ✅ `{k}={v}` — {r}")
+                                    else:
+                                        fail.append(f"  ❌ {k} (เขียนไม่ได้)")
+                                lines = ["🤖 AI แก้ config แล้ว:"] + done + fail
+                                lines.append("\n⚠️ พิมพ์ /restart เพื่อให้ค่าใหม่มีผล")
+                                tg.send_text(token, chat, "\n".join(lines))
                     elif cmd == "pause":
                         _set_pause(True)
                         tg.send_text(token, chat, "⏸️ หยุดเปิดไม้ใหม่แล้ว — ไม้ที่เปิดอยู่ยังจัดการต่อ (พิมพ์ /resume เพื่อเริ่มใหม่)")
