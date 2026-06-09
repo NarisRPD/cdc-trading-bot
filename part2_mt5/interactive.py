@@ -1443,16 +1443,20 @@ def main():
             eq = acc_now.get("equity", bal) or bal
             _check_metal_unlock(cfg, token, chat, bal, _state)   # ปลดล็อกทอง/เงินเมื่อพอร์ตถึงเกณฑ์
 
-            # 2.4) เบรกขาดทุนสะสม (drawdown จากจุดสูงสุด) → หยุดหมด + ปิดไม้ + แจ้ง
+            # 2.4) เบรกขาดทุนสะสม (drawdown จากจุดสูงสุด) → หยุดเปิดไม้ใหม่ (+ปิดไม้ ถ้าตั้งไว้) + แจ้ง
             if max_dd > 0 and eq > 0:
                 if eq > peak_eq:
                     peak_eq = eq
                     _state["peak_eq"] = peak_eq; _save_state(_state)
                 elif peak_eq > 0 and eq <= peak_eq * (1 - max_dd / 100) and not _is_paused():
                     dd = (peak_eq - eq) / peak_eq * 100
+                    # ดีฟอลต์: หยุดเปิดไม้ใหม่อย่างเดียว ไม่ปิดไม้เดิม (ตามกฎ "ขาดทุนไม่ปิด ปล่อยถึง SL เอง")
+                    # เปิด DRAWDOWN_CLOSE_POSITIONS=true ถ้าอยากให้ปิดไม้ทั้งหมดด้วย (เกราะแข็งกว่า)
+                    _dd_close = cfg.get("DRAWDOWN_CLOSE_POSITIONS", "false").lower() in ("1", "true", "yes", "on")
+                    _act = "หยุดเปิดไม้ใหม่ + ปิดไม้ทั้งหมด" if _dd_close else "หยุดเปิดไม้ใหม่ (ไม้เดิมวิ่งต่อถึง SL เอง)"
                     tg.send_text(token, chat, f"🛑 ขาดทุนสะสมถึง {dd:.1f}% (เพดาน {max_dd:.0f}%) — "
-                                              "หยุดทั้งหมด + ปิดไม้ · พิมพ์ /resume เพื่อเริ่มใหม่")
-                    if execute_on:
+                                              f"{_act} · พิมพ์ /resume เพื่อเริ่มใหม่")
+                    if execute_on and _dd_close:
                         _close_all(token, chat)
                     _set_pause(True)
                     peak_eq = eq                    # reset baseline กัน resume แล้วเด้งซ้ำ
