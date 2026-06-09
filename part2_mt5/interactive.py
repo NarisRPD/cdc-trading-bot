@@ -30,8 +30,9 @@ import news_guard
 import market_hours
 from run import _watchlist
 
-# ── Logging: Python จัดการ rotation เอง (เก็บ log ย้อนหลัง 2 วัน · เก่ากว่าลบอัตโนมัติ) ──
-# ตัดทุกเที่ยงคืน → part2.log (วันนี้) + part2.log.YYYY-MM-DD (2 วันก่อน) · backupCount=2
+# ── Logging: Python จัดการ rotation เอง (เก็บ log ย้อนหลัง N วัน · เก่ากว่าลบอัตโนมัติ) ──
+# ตัดทุกเที่ยงคืน → part2.log (วันนี้) + part2.log.YYYY-MM-DD (N วันก่อน)
+# จำนวนวันปรับได้ผ่าน env PART2_LOG_DAYS (ดีฟอลต์ 7) — เพิ่มถ้าอยากย้อนดูเหตุการณ์เก่า
 # *** .bat ต้องรัน `python interactive.py` เฉย ๆ (ห้าม >> part2.log 2>&1) ไม่งั้นเขียนซ้ำ/rotate พัง ***
 from logging.handlers import TimedRotatingFileHandler
 # path ของ log ตั้งค่าได้ผ่าน env PART2_LOG_DIR → ชี้ไปโฟลเดอร์ OneDrive/Drive
@@ -42,9 +43,13 @@ try:
 except OSError:
     _LOG_DIR = os.path.dirname(os.path.abspath(__file__))   # path เสีย → fallback โฟลเดอร์ script
 _LOG_FILE = os.path.join(_LOG_DIR, "part2.log")
+try:
+    _LOG_DAYS = int(os.getenv("PART2_LOG_DAYS", "7") or "7")
+except ValueError:
+    _LOG_DAYS = 7
 _log_fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 _file_handler = TimedRotatingFileHandler(_LOG_FILE, when="midnight", interval=1,
-                                         backupCount=2, encoding="utf-8")
+                                         backupCount=_LOG_DAYS, encoding="utf-8")
 _file_handler.setFormatter(_log_fmt)
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_log_fmt)

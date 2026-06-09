@@ -159,8 +159,11 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
         if closing:
             import journal
             day_pnl = journal.today_pnl()
+            # กฎผู้ใช้: "ขาดทุนไม่ต้องปิด · กำไรปิดได้" → ดีฟอลต์ปิดเฉพาะไม้กำไร
+            # ไม้ขาดทุนปิดก่อนตลาดปิดก็ต่อเมื่อเปิด CLOSE_LOSERS_ON_GREEN_DAY=true + วันเขียว
+            _close_loser_green = cfg.get("CLOSE_LOSERS_ON_GREEN_DAY", "false").lower() in ("1", "true", "yes", "on")
             for p in closing:
-                if p.profit > 0 or day_pnl > 0:
+                if p.profit > 0 or (_close_loser_green and day_pnl > 0):
                     if execute.close_position(p).get("ok"):
                         log.info("🔔 ตลาดใกล้ปิด → ปิด %s (ไม้ $%.2f · พอร์ตวันนี้ $%.2f)",
                                  p.symbol, p.profit, day_pnl)
