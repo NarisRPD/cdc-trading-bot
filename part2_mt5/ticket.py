@@ -301,6 +301,23 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     bal = account.get("balance", 0) or 0
     used_bal = bal if bal > 0 else float(cfg.get("TEST_BALANCE", "1000"))
     risk_pct = float(cfg.get("RISK_PCT_PER_TRADE", "1.0"))
+
+    # ── Confluence boost (Confirmation mode) ──────────────────────────────────
+    # หลายกลยุทธ์ entry เห็นพ้อง symbol+direction เดียวกัน = สัญญาณแข็งแรงกว่า
+    # → เพิ่มความเสี่ยง/lot (cap ที่ MAX_RISK_PCT) · ไม่ลดจำนวนไม้ แค่ไม้ confluence ใหญ่ขึ้น
+    _confl_srcs = [s for s in (bias.get("confluence") or []) if s]
+    _confl_n = len(_confl_srcs)
+    _confl_min = int(cfg.get("CONFLUENCE_MIN_COUNT", "2") or "2")
+    confluence_boosted = False
+    if (_confl_n >= _confl_min
+            and cfg.get("USE_CONFLUENCE", "true").lower() in ("1", "true", "yes", "on")):
+        _boost = float(cfg.get("CONFLUENCE_LOT_MULT", "1.5") or "1.5")
+        _cap = float(cfg.get("MAX_RISK_PCT", "2.0"))
+        risk_pct = min(risk_pct * _boost, _cap)        # cap ไม่ให้ทะลุเพดานความเสี่ยง
+        confluence_boosted = True
+        log.info("🔗 Confluence %s %s — %d กลยุทธ์เห็นพ้อง (%s) → risk %.2f%%",
+                 exsym, direction, _confl_n, "+".join(_confl_srcs), risk_pct)
+
     sizing = mt5.lots_for_risk(exsym, used_bal, risk_pct, spot, sl)
 
     # VPOC Filter: ลด lot เมื่ออยู่ใน equilibrium zone (ราคาใกล้ VPOC — ยังไม่มีทิศชัด)
@@ -339,6 +356,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         "structure": struct.get("label"), "risk_gate_ok": gate["ok"], "risk_gate_reasons": gate["reasons"],
         "vpoc": round(vpoc_info["vpoc"], 5) if vpoc_info else None,
         "near_vpoc": near_vpoc, "vpoc_tp_used": vpoc_tp_used,
+        "confluence": _confl_srcs,               # กลยุทธ์ที่เห็นพ้อง (≥2 = สัญญาณแข็งแรง)
     }
     memory = learn.summary_for_ai(int(cfg.get("LEARN_MIN_SAMPLES", "10")))   # บทเรียนจากผลจริง
     verdict = gemini_gate.assess(ctx, cfg.get("GEMINI_API_KEY"), memory)
@@ -360,7 +378,8 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
             "sizing": sizing, "gate": gate, "verdict": verdict, "used_balance": used_bal,
             "balance_is_test": bal <= 0, "reduced": reduced,
             "rsi_tf": round(rsi_tf_val, 1),  # RSI จาก TF ของเทคนิคจริง (ไม่ใช่ ENTRY_TF เสมอ)
-            "vpoc_info": vpoc_info, "near_vpoc": near_vpoc, "vpoc_tp_used": vpoc_tp_used}
+            "vpoc_info": vpoc_info, "near_vpoc": near_vpoc, "vpoc_tp_used": vpoc_tp_used,
+            "confluence": _confl_srcs, "confluence_boosted": confluence_boosted}
 
 
 def format_ticket(t: dict) -> str:
@@ -384,6 +403,11 @@ def format_ticket(t: dict) -> str:
     if b.get("st_value"):
         src_txt += f" · ST={b['st_value']}"
     lines.append(src_txt)
+    # Confluence — หลายกลยุทธ์เห็นพ้อง symbol+direction เดียวกัน (lot ใหญ่ขึ้น)
+    _confl = t.get("confluence") or []
+    if t.get("confluence_boosted") and len(_confl) >= 2:
+        _confl_lbl = " + ".join(_src_map.get(s, s) for s in _confl)
+        lines.append(f"🔗 Confluence ×{len(_confl)}: {_confl_lbl} — เพิ่ม lot")
     # ยืนยัน Part 2
     conf = []
     if t["candles"]:

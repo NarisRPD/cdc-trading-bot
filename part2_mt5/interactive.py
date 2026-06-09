@@ -754,12 +754,30 @@ def _strat_tags(t: dict) -> str:
     tags = []
     if t.get("scalp"):
         tags.append(t["scalp"])
+    _confl = t.get("confluence") or []
+    if t.get("confluence_boosted") and len(_confl) >= 2:
+        tags.append(f"🔗×{len(_confl)}")      # หลายกลยุทธ์เห็นพ้อง → lot ใหญ่ขึ้น
     if t.get("reduced"):
         tags.append("ไม้เล็ก")
     for k, lbl in (("three_bar", "3BP"), ("brt", "BRT"), ("ibb", "IBB"), ("tlp", "2Leg")):
         if (t.get(k) or {}).get("detected"):
             tags.append(lbl)
     return " · ".join(tags)
+
+
+def _annotate_confluence(queue: list) -> None:
+    """Confluence (Confirmation mode): นับว่ากี่กลยุทธ์ entry เห็นพ้อง (symbol, direction) เดียวกัน
+    → เติม bias['confluence'] = list ของ source ที่ตรงกัน (รวมตัวเอง)
+
+    *** ไม่กรองไม้ทิ้ง *** — ไม้ที่หลายกลยุทธ์ยืนยันแค่ได้ lot/ความมั่นใจมากขึ้น (ดู build_ticket)
+    mutate queue ในที่ — bias ทุกตัวจะมี key 'confluence' หลังเรียก"""
+    agree: dict = {}
+    for bias, _hint in queue:
+        k = (bias["symbol"], bias["direction"])
+        agree.setdefault(k, set()).add(bias.get("source", ""))
+    for bias, _hint in queue:
+        k = (bias["symbol"], bias["direction"])
+        bias["confluence"] = sorted(s for s in agree.get(k, set()) if s)
 
 
 def _scan_summary(results: list) -> str:
@@ -917,6 +935,11 @@ def _open_report(t: dict, res: "dict | None") -> str:
     _tag = (_b0.get("scalp") or {}).get("tag") or _SRC_MAP.get(_b0.get("source", ""), "")
     if _tag:
         lines.append(f"⚙️ {_tag}")
+    # Confluence — หลายกลยุทธ์เห็นพ้อง → lot ใหญ่ขึ้น (สัญญาณแข็งแรง)
+    _confl = t.get("confluence") or []
+    if t.get("confluence_boosted") and len(_confl) >= 2:
+        _confl_lbl = " + ".join(_SRC_MAP.get(s, s) for s in _confl)
+        lines.append(f"🔗 Confluence ×{len(_confl)}: {_confl_lbl} — เพิ่ม lot")
     if res and res.get("ticket"):
         lines.append(f"#{res['ticket']} @ {fx(res.get('price'))}")
     lines.append(f"🎯 Entry {fx(t['spot'])} · 🛡️ SL {fx(t['sl'])} · 🎯 TP {fx(t['tp'])}"
@@ -1545,6 +1568,7 @@ def main():
                             queue += _scan_rsi_div(cfg, syms)
                         if use_orb_pro and auto_on:        # ORB London/NY session (Toby Crabel)
                             queue += _scan_orb_pro(cfg, syms)
+                        _annotate_confluence(queue)        # นับกลยุทธ์ที่เห็นพ้อง → boost lot ใน build_ticket
                         last_scan = now
                         log.info("สแกนได้ %d ตัวมีทิศ", len(queue))
                         # ผู้ใช้ /scan แต่ไม่มีสัญญาณเลย → แจ้งทันที

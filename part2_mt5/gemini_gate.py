@@ -67,10 +67,16 @@ def assess(ctx: dict, api_key: Optional[str] = None, memory: str = "") -> dict:
         "นี่คือ scalp trade (M5/M15) — ไม่ต้องการ trend ยาว แค่ momentum ระยะสั้น 30-90 นาที "
         "อย่าปฏิเสธเพราะ H1/D1 sideways — TF สั้นมีอิสระ "
     ) if _is_scalp else ""
+    # Confluence — หลายกลยุทธ์ entry อิสระเห็นพ้องทิศเดียวกัน = หลักฐานยืนยันแข็งแรงขึ้น
+    _confl = ctx.get("confluence") or []
+    _confl_note = (
+        f"⭐ ไม้นี้มี {len(_confl)} กลยุทธ์อิสระเห็นพ้อง ({', '.join(_confl)}) — "
+        "confluence แบบนี้เพิ่มความน่าเชื่อถือของสัญญาณ ให้น้ำหนักบวก "
+    ) if len(_confl) >= 2 else ""
     prompt = (
         "คุณเป็น prop firm risk manager ประเมินไม้เทรดนี้ **อย่างเป็นกลาง** "
         "ชั่งน้ำหนักทั้ง 2 ด้าน: โอกาสที่จะชนะ vs ความเสี่ยงที่จะแพ้ "
-        f"{_scalp_note}"
+        f"{_scalp_note}{_confl_note}"
         "ห้ามทำนายราคา ห้ามแต่งข้อมูล ใช้ข้อมูลที่ให้มาเท่านั้น "
         "เกณฑ์: enter = สัญญาณดี risk/reward คุ้ม · small = สัญญาณพอใช้ risk สูงกว่าปกติ · "
         "skip = สัญญาณขัดแย้งหนัก หรือ R:R ไม่คุ้มเลย "
