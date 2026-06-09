@@ -27,6 +27,7 @@ import manage
 import journal
 import learn
 import news_guard
+import market_hours
 from run import _watchlist
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -185,7 +186,6 @@ def _scan_supertrend(cfg, broker: set) -> list:
     ตรวจ flip ล่าสุด (fresh_bars แท่ง) ไม่เอาสัญญาณค้างเก่า
     ATR-adaptive: SL ติดตาม SuperTrend line → ปรับตามความผันผวนจริง"""
     import scalp as _scalp
-    import market_hours
     import pandas as pd
     tf = cfg.get("ST_TF", "H1")
     period = int(cfg.get("ST_PERIOD", "10"))
@@ -219,7 +219,6 @@ def _scan_supertrend(cfg, broker: set) -> list:
 def _scan_halftrend(cfg, broker: set) -> list:
     """#2 HalfTrend — smooth ATR trend, ลด whipsaw ดีกว่า SuperTrend ในตลาดผันผวน"""
     import scalp as _scalp
-    import market_hours
     import pandas as pd
     tf = cfg.get("HT_TF", "H1")
     amp = int(cfg.get("HT_AMPLITUDE", "2"))
@@ -253,7 +252,6 @@ def _scan_halftrend(cfg, broker: set) -> list:
 def _scan_utbot(cfg, broker: set) -> list:
     """#3 UT Bot Alerts — ATR trailing stop crossover, ตอบสนองไว เหมาะ M15/H1"""
     import scalp as _scalp
-    import market_hours
     import pandas as pd
     tf = cfg.get("UTB_TF", "M15")
     kv = float(cfg.get("UTB_KEY_VALUE", "1.0"))
@@ -311,7 +309,6 @@ def _scan_scalp(cfg, broker: set) -> list:
     เติมจังหวะ 'ตามเทรนด์' ระหว่างรอสัญญาณหลัก — ยังต้องผ่านเกราะ build_ticket ทุกด่าน
     bias.scalp = {sl, rr, tag} → build_ticket ใช้ SL/TP ของกลยุทธ์เอง (ปิดไว ไม่โดนกฎ +2%)"""
     import scalp as _scalp
-    import market_hours
     import pandas as pd
     rr = float(cfg.get("SCALP_RR", "1.8"))
     wk = (datetime.now(timezone.utc).weekday() >= 5 and
@@ -349,7 +346,6 @@ def _scan_fx_orb(cfg, broker: set) -> list:
     if not (7 <= datetime.now(timezone.utc).hour < 11):   # นอกหน้าต่าง London → ไม่ต้องสแกน
         return []
     import scalp as _scalp
-    import market_hours
     out = []
     for sym in _watchlist(cfg, broker):
         if market_hours.category(sym) != "fx":
@@ -372,7 +368,6 @@ def _scan_hybrid(cfg, broker: set) -> list:
     """สแกน Hybrid-Pro (H1 เทรนด์ + M15 ย่อ EMA20 + RSI 40-60 + แท่งกลับตัว) เลี่ยง FX → [(bias,None)]
     spread guard กัน SOL/XRP (spread สูง) ให้เองในขั้น build_ticket"""
     import scalp as _scalp
-    import market_hours
     import pandas as pd
     rr = float(cfg.get("HYBRID_RR", "2.5"))
     wk = (datetime.now(timezone.utc).weekday() >= 5 and
@@ -412,7 +407,6 @@ def _scan_ema_m5(cfg, broker: set) -> list:
     - เข้าเมื่อ EMA fast ตัด slow + RSI อยู่ใน momentum zone (40-65)
     - SL: 1×ATR(M5) ใต้/เหนือ EMA slow — แน่นเหมาะ scalp ออกไวถ้ากราฟเสียทรง"""
     import scalp as _scalp
-    import market_hours
     import pandas as pd
     tf      = cfg.get("EMA_M5_TF",    "M5")
     fast    = int(cfg.get("EMA_FAST",  "8"))
@@ -1008,7 +1002,6 @@ def _count_direction(direction: str) -> int:
 def _count_group(group: str) -> int:
     """จำนวนไม้ในกลุ่มสินทรัพย์เดียวกัน (กระจายความเสี่ยง — ไม่กระจุกกลุ่มเดียว)"""
     import MetaTrader5 as m5
-    import market_hours
     return len([p for p in (m5.positions_get() or []) if p.magic == 260605
                 and market_hours.correlation_group(p.symbol) == group])
 
@@ -1063,14 +1056,14 @@ def main():
     if not token or not chat:
         log.error("ไม่มี TELEGRAM_BOT_TOKEN/CHAT_ID (ต้องเป็นบอทตัวที่ 2)")
         return
-    ttl = int(cfg.get("TICKET_TTL_SEC", "180"))
+    ttl = int(cfg.get("TICKET_TTL_SEC", "180").split("#")[0].strip())
     scan_gap = int(float(cfg.get("SCAN_INTERVAL_MIN", "5")) * 60)
     cooldown = int(cfg.get("SYMBOL_COOLDOWN_SEC", "3600"))
     execute_on = cfg.get("EXECUTE_ORDERS", "false").lower() in ("1", "true", "yes", "on")
     auto_on = cfg.get("AUTO_TRADE", "false").lower() in ("1", "true", "yes", "on")
-    use_supertrend = cfg.get("USE_SUPERTREND", "true").lower() in ("1", "true", "yes", "on")   # SuperTrend H1
-    use_halftrend  = cfg.get("USE_HALFTREND",  "true").lower() in ("1", "true", "yes", "on")   # HalfTrend H1
-    use_utbot      = cfg.get("USE_UTBOT",      "true").lower() in ("1", "true", "yes", "on")   # UT Bot M15
+    use_supertrend = cfg.get("USE_SUPERTREND", "false").lower() in ("1", "true", "yes", "on")   # SuperTrend H1 (opt-in)
+    use_halftrend  = cfg.get("USE_HALFTREND",  "false").lower() in ("1", "true", "yes", "on")   # HalfTrend H1 (opt-in)
+    use_utbot      = cfg.get("USE_UTBOT",      "false").lower() in ("1", "true", "yes", "on")   # UT Bot M15 (opt-in)
     use_ema_stoch  = cfg.get("USE_EMA_STOCH", "false").lower() in ("1", "true", "yes", "on")   # scalp EMA+Stoch M15
     use_ema_m5     = cfg.get("USE_EMA_M5",   "false").lower() in ("1", "true", "yes", "on")   # EMA Ribbon M5 FX scalp (prop firm strategy)
     use_fx_orb = cfg.get("USE_FX_ORB", "false").lower() in ("1", "true", "yes", "on")        # Asian-London ORB เฉพาะ FX
@@ -1535,7 +1528,6 @@ def main():
                                 continue
                             # ข้ามเงียบถ้าตลาดปิด — ไม่เพิ่มใน scan_res / ไม่เรียก build_ticket
                             # (หุ้น US pre-market: spread 5–10× กว้างกว่าปกติ → ไม่มีประโยชน์ประมวล)
-                            import market_hours   # ต้อง import ก่อนใช้ครั้งแรก (กัน UnboundLocalError จาก Python scoping)
                             if not market_hours.is_open(sym):
                                 continue
                             # crypto blackout เพิ่มเติม (ช่วงบาง + options expiry)
