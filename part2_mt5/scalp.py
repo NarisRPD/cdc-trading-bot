@@ -746,7 +746,7 @@ def vwap_bounce_signal(df, std_entry: float = 0.5, std_sl: float = 1.5,
         today = df["date"].max()
         ddf = df[df["date"] == today].copy()
         if len(ddf) < 5:
-            ddf = df.copy()    # fallback: ใช้ทั้งหมดถ้าวันนี้มีแท่งน้อย
+            return _E          # VWAP ต้องการข้อมูลวันนี้ — fallback multi-day ให้ VWAP ผิด
 
         # VWAP = Σ(typical_price × volume) / Σ(volume) — reset ทุกวัน
         ddf["tp"]  = (ddf["high"] + ddf["low"] + ddf["close"]) / 3.0
