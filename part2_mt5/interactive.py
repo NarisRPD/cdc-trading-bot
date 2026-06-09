@@ -48,8 +48,29 @@ _file_handler = TimedRotatingFileHandler(_LOG_FILE, when="midnight", interval=1,
 _file_handler.setFormatter(_log_fmt)
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_log_fmt)
-logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
+# *** สำคัญ: `from run import _watchlist` ด้านบนรัน run.py ซึ่งเรียก logging.basicConfig() ตอน import ***
+# → root logger มี handler (console) แล้ว ทำให้ basicConfig() ตรงนี้กลายเป็น no-op
+#   = file handler ไม่ติด → part2.log ว่างเปล่า (เคยเป็นบั๊กนี้)
+# แก้: ผูก handler เองโดยตรง (idempotent ไม่ว่า import order ไหน) — ล้างของเดิมก่อนกัน log ซ้ำ
+_root = logging.getLogger()
+for _h in list(_root.handlers):
+    _root.removeHandler(_h)
+_root.setLevel(logging.INFO)
+_root.addHandler(_file_handler)
+_root.addHandler(_console_handler)
 log = logging.getLogger("part2.interactive")
+
+# จับ exception ที่หลุด (uncaught) → เขียนลง part2.log ด้วย (เดิมไปแค่ console → หาย ดู crash ไม่ได้)
+# กันเคสบอท crash แล้ว part2.log ไม่มีร่องรอยว่าพังเพราะอะไร
+def _log_uncaught(exc_type, exc_value, exc_tb):
+    if issubclass(exc_type, KeyboardInterrupt):        # Ctrl+C → ปล่อยให้ออกปกติ
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+    log.critical("บอท crash (uncaught exception): %s", exc_value,
+                 exc_info=(exc_type, exc_value, exc_tb))
+
+
+sys.excepthook = _log_uncaught
 
 TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
