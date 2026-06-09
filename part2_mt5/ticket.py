@@ -17,6 +17,7 @@ import risk
 import gemini_gate
 import learn
 import scalp as _scalp_module   # ใช้ vpoc() — import ที่ module level เพื่อกัน shadowing กับ param scalp
+import scalp_filters             # Pro scalping filters (Kill Zone/Liquidity/Momentum/VWAP)
 
 log = logging.getLogger("part2.ticket")
 
@@ -34,6 +35,11 @@ def _atr(df, n: int = 14) -> float:
 
 # กลยุทธ์ "สวนเทรนด์โดยตั้งใจ" (mean-reversion) — ไม่บังคับ MTF align (ไม่งั้นตัดทิ้งหมด)
 _MEAN_REVERSION_SRC = {"vwap", "rsi_div"}
+
+# กลยุทธ์ scalp/สั้น ที่ Pro Scalping Filters เหมาะ (Kill Zone/Liquidity/Momentum/VWAP)
+# ไม่รวม trend H1 (supertrend/halftrend/pa) เพราะ Kill Zone จะบล็อกนอก session ผิดเจตนา
+_SCALP_FILTER_SRC = {"vwap", "rsi_div", "bb_squeeze", "ema_m5", "orb_pro",
+                     "fx_orb", "scalp", "utbot", "hybrid"}
 
 
 def _higher_tf_trend(exsym: str, mtf_tf: str, mt5) -> str:
@@ -195,6 +201,21 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
             log.info("ข้าม %s — ไล่ราคา (แท่งวิ่ง %.1f×ATR > %.1f) [anti-chase]", exsym, _moved / atr, _chase)
             return {"skipped": True, "exsym": exsym, "direction": direction,
                     "reason": f"ไล่ราคา (แท่งวิ่ง {_moved / atr:.1f}×ATR เกิน {_chase})"}
+
+    # ── Pro Scalping Filters (Kill Zone/Liquidity Sweep/Momentum/VWAP distance) ──
+    # ใช้กับกลยุทธ์ scalp/สั้นเท่านั้น (ดู _SCALP_FILTER_SRC) · เปิดผ่าน USE_SCALP_FILTERS
+    # ดึง M5 มาตรวจ (filter ออกแบบสำหรับ M5) · ไม่ผ่าน → ข้าม
+    if (cfg.get("USE_SCALP_FILTERS", "false").lower() in ("1", "true", "yes", "on")
+            and bias.get("source", "") in _SCALP_FILTER_SRC):
+        _sf_tf = cfg.get("SCALP_FILTER_TF", "M5")
+        _sf_df = mt5.rates(exsym, _sf_tf, int(cfg.get("SCALP_FILTER_BARS", "300") or "300"))
+        if _sf_df is not None and len(_sf_df) >= 30:
+            _sf = scalp_filters.check_all_filters(_sf_df, direction, cfg, symbol=exsym, atr=atr)
+            if not _sf.get("pass"):
+                log.info("ข้าม %s — %s [scalp filters %d/%d]", exsym, _sf.get("reason", ""),
+                         _sf.get("score", 0), _sf.get("max_score", 0))
+                return {"skipped": True, "exsym": exsym, "direction": direction,
+                        "reason": _sf.get("reason", "ไม่ผ่าน scalp filters")}
 
     lb = int(cfg.get("SL_LOOKBACK", "20"))            # จำนวนแท่งหา swing
     mult = float(cfg.get("SL_ATR_MULT", "1.5"))       # กันชน ATR
