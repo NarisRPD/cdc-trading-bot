@@ -9,7 +9,8 @@ if not exist "part2_should_run.flag" echo. > part2_should_run.flag
 :loop
 if not exist "part2_should_run.flag" goto end
 echo [%date% %time%] Starting interactive.py ... >> part2.log
-python interactive.py >> part2.log 2>&1
+REM Python จัดการเขียน+rotate part2.log เอง (เก็บ 2 วัน) — ห้าม redirect ซ้ำ
+python interactive.py
 if errorlevel 2 goto end
 if not exist "part2_should_run.flag" goto end
 echo [%date% %time%] interactive.py exited - restart in 15s >> part2.log

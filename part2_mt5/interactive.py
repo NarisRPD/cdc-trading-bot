@@ -30,7 +30,18 @@ import news_guard
 import market_hours
 from run import _watchlist
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+# ── Logging: Python จัดการ rotation เอง (เก็บ log ย้อนหลัง 2 วัน · เก่ากว่าลบอัตโนมัติ) ──
+# ตัดทุกเที่ยงคืน → part2.log (วันนี้) + part2.log.YYYY-MM-DD (2 วันก่อน) · backupCount=2
+# *** .bat ต้องรัน `python interactive.py` เฉย ๆ (ห้าม >> part2.log 2>&1) ไม่งั้นเขียนซ้ำ/rotate พัง ***
+from logging.handlers import TimedRotatingFileHandler
+_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "part2.log")
+_log_fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+_file_handler = TimedRotatingFileHandler(_LOG_FILE, when="midnight", interval=1,
+                                         backupCount=2, encoding="utf-8")
+_file_handler.setFormatter(_log_fmt)
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_fmt)
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 log = logging.getLogger("part2.interactive")
 
 TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
@@ -1643,4 +1654,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise                                   # ปล่อย sys.exit(2) ผ่าน (bat ใช้ errorlevel)
+    except BaseException:                        # noqa: BLE001 — crash ตอน startup/หลุด loop
+        log.exception("fatal error — interactive.py หลุดออก (bat จะ restart)")
+        raise
