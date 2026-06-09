@@ -32,6 +32,27 @@ def _atr(df, n: int = 14) -> float:
     return float(np.mean(tr[-n:]))
 
 
+# กลยุทธ์ "สวนเทรนด์โดยตั้งใจ" (mean-reversion) — ไม่บังคับ MTF align (ไม่งั้นตัดทิ้งหมด)
+_MEAN_REVERSION_SRC = {"vwap", "rsi_div"}
+
+
+def _higher_tf_trend(exsym: str, mtf_tf: str, mt5) -> str:
+    """ทิศเทรนด์ TF ใหญ่: 'up' / 'down' / 'neutral' จาก EMA50 vs EMA200 + ตำแหน่งราคา
+    ใช้บล็อกไม้สวนเทรนด์ (MTF alignment filter) · ข้อมูลไม่พอ → 'neutral' (ไม่บล็อก)"""
+    df = mt5.rates(exsym, mtf_tf, 220)
+    if df is None or len(df) < 200:
+        return "neutral"
+    c = df["close"].astype(float)
+    e50 = float(c.ewm(span=50, adjust=False).mean().iloc[-1])
+    e200 = float(c.ewm(span=200, adjust=False).mean().iloc[-1])
+    price = float(c.iloc[-1])
+    if e50 > e200 and price > e200:
+        return "up"
+    if e50 < e200 and price < e200:
+        return "down"
+    return "neutral"       # EMA พันกัน/ราคาอยู่กลาง = ไม่มีเทรนด์ชัด → ไม่บล็อก
+
+
 def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
                  part1_hint: Optional[dict] = None, scalp: Optional[dict] = None) -> Optional[dict]:
     # ประเภทสินทรัพย์ — ใช้ตลอด function (spread / RSI threshold)
@@ -147,6 +168,28 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         log.info("ข้าม %s — RSI(%s) %.0f overbought (ไม่ long ยอดดอย)", exsym, rsi_tf, rsi_tf_val)
         return {"skipped": True, "exsym": exsym, "direction": direction,
                 "reason": f"RSI({rsi_tf}) {rsi_tf_val:.0f} overbought (ไม่ long ยอดดอย)"}
+
+    # ── MTF Alignment Filter — ไม่เข้าสวนเทรนด์ TF ใหญ่ (ลดไม้ "แดงยาวจน SL") ──
+    # ยกเว้นกลยุทธ์ mean-reversion (vwap/rsi_div) ที่สวนเทรนด์โดยตั้งใจ
+    if (cfg.get("USE_MTF_FILTER", "false").lower() in ("1", "true", "yes", "on")
+            and bias.get("source", "") not in _MEAN_REVERSION_SRC):
+        _mtf_tf = cfg.get("MTF_TF", "H1")
+        _htf = _higher_tf_trend(exsym, _mtf_tf, mt5)
+        if (direction == "buy" and _htf == "down") or (direction == "sell" and _htf == "up"):
+            log.info("ข้าม %s — สวนเทรนด์ %s (%s) [MTF filter]", exsym, _mtf_tf, _htf)
+            return {"skipped": True, "exsym": exsym, "direction": direction,
+                    "reason": f"สวนเทรนด์ {_mtf_tf} ({_htf}) — MTF filter"}
+
+    # ── Anti-chase / closed-bar guard — ไม่ไล่ราคาที่วิ่งไปไกลแล้วในแท่งนี้ ──
+    # แท่ง forming ขยับจาก open เกิน CHASE_ATR_MULT×ATR ในทิศเทรด = ไล่ของแพง → เด้งกลับง่าย
+    if cfg.get("REQUIRE_BAR_CLOSE", "false").lower() in ("1", "true", "yes", "on") and atr > 0:
+        _chase = float(cfg.get("CHASE_ATR_MULT", "0.7") or "0.7")
+        _bar_open = float(df["open"].iloc[-1])
+        _moved = (spot - _bar_open) if direction == "buy" else (_bar_open - spot)
+        if _moved > _chase * atr:
+            log.info("ข้าม %s — ไล่ราคา (แท่งวิ่ง %.1f×ATR > %.1f) [anti-chase]", exsym, _moved / atr, _chase)
+            return {"skipped": True, "exsym": exsym, "direction": direction,
+                    "reason": f"ไล่ราคา (แท่งวิ่ง {_moved / atr:.1f}×ATR เกิน {_chase})"}
 
     lb = int(cfg.get("SL_LOOKBACK", "20"))            # จำนวนแท่งหา swing
     mult = float(cfg.get("SL_ATR_MULT", "1.5"))       # กันชน ATR
@@ -305,6 +348,17 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     vol = patterns.volume_entering(df)
     brk = patterns.breakout(df)
     struct = patterns.structure(df)
+
+    # ── Require entry confirmation — ต้องมีหลักฐานยืนยันอย่างน้อย 1 ถึงเข้า ──
+    # กันไม้ "เปล่า" (ไม่มีแท่งยืนยัน/volume/pattern) ที่มักเด้งสวนทันที
+    # นับ: แท่งเทียนยืนยัน · volume เข้า · 3BP · BRT · IBB · 2-Leg (อย่างใดอย่างหนึ่ง)
+    if cfg.get("REQUIRE_ENTRY_CONFIRM", "false").lower() in ("1", "true", "yes", "on"):
+        _has_confirm = bool(cdl) or vol.get("entering") or tbp.get("detected") \
+            or brt.get("detected") or ibb.get("detected") or tlp.get("detected")
+        if not _has_confirm:
+            log.info("ข้าม %s — ไม่มีแท่งยืนยัน/volume/pattern [require-confirm]", exsym)
+            return {"skipped": True, "exsym": exsym, "direction": direction,
+                    "reason": "ไม่มีแท่งยืนยัน/volume/pattern"}
 
     bal = account.get("balance", 0) or 0
     used_bal = bal if bal > 0 else float(cfg.get("TEST_BALANCE", "1000"))
