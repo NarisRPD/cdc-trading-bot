@@ -320,8 +320,9 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     if (_confl_n >= _confl_min
             and cfg.get("USE_CONFLUENCE", "true").lower() in ("1", "true", "yes", "on")):
         _boost = float(cfg.get("CONFLUENCE_LOT_MULT", "1.5") or "1.5")
-        _cap = float(cfg.get("MAX_RISK_PCT", "2.0"))
-        risk_pct = min(risk_pct * _boost, _cap)        # cap ไม่ให้ทะลุเพดานความเสี่ยง
+        # cap ที่ 97% ของเพดาน — เว้น headroom ให้ lot ปัดขึ้นได้โดยไม่โดน MAX_RISK_PCT guard เด้งทิ้ง
+        _cap = float(cfg.get("MAX_RISK_PCT", "2.0")) * 0.97
+        risk_pct = min(risk_pct * _boost, _cap)
         confluence_boosted = True
         log.info("🔗 Confluence %s %s — %d กลยุทธ์เห็นพ้อง (%s) → risk %.2f%%",
                  exsym, direction, _confl_n, "+".join(_confl_srcs), risk_pct)
@@ -331,7 +332,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # cap ที่ MAX_RISK_PCT เสมอ · ปิดฟีเจอร์/ข้อมูลน้อย → multiplier = 1.0 (ไม่ปรับ)
     edge_mult = learn.edge_multiplier(_source, cfg)
     if edge_mult != 1.0:
-        _cap2 = float(cfg.get("MAX_RISK_PCT", "2.0"))
+        _cap2 = float(cfg.get("MAX_RISK_PCT", "2.0")) * 0.97   # headroom กัน guard เด้งทิ้ง
         risk_pct = min(risk_pct * edge_mult, _cap2)
         log.info("📊 Edge sizing %s (%s) — ×%.2f → risk %.2f%%", exsym, _source or "?", edge_mult, risk_pct)
 

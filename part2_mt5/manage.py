@@ -110,9 +110,11 @@ def _trend_against(sym: str, direction: str, tf_str: str = "M15") -> bool:
         df = pd.DataFrame(rates)
         df.columns = [c.lower() for c in df.columns]
         res = scalp.supertrend(df)
-        if res.get("st") is None:
+        if res.get("st") is None or len(res["direction"]) < 2:
             return False
-        cur_dir = int(res["direction"][-1])     # +1 = ขาขึ้น (buy) · -1 = ขาลง (sell)
+        # ใช้แท่งที่ "ปิดแล้ว" ([-2]) ไม่ใช่แท่งกำลังก่อตัว ([-1]) — กัน flip หลอกกลางแท่ง
+        # (แท่ง forming แกว่งได้ ราคาอาจเด้งกลับก่อนปิด → ปิดไม้กำไรก่อนเวลาโดยไม่จำเป็น)
+        cur_dir = int(res["direction"][-2])     # +1 = ขาขึ้น (buy) · -1 = ขาลง (sell)
         # position buy → เทรนด์ต้องเป็น -1 (ลง) ถึงนับว่าสวน · sell → เทรนด์เป็น +1 (ขึ้น)
         return (direction == "buy" and cur_dir == -1) or (direction == "sell" and cur_dir == 1)
     except Exception:  # noqa: BLE001
