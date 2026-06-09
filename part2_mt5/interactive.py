@@ -817,6 +817,7 @@ def _help_text() -> str:
         "/scan — 🔍 สแกนตลาดทันที (ไม่รอรอบปกติ) + ส่งผลมาที่นี่\n"
         "/stats — สถิติผลเทรดสะสม (win rate · profit factor)\n"
         "/insights — 🧠 บทเรียน: เทคนิคไหนได้เงินจริง (บอทเรียนรู้จากผลจริง)\n"
+        "/export [csv|jsonl] — 📊 ส่งออกข้อมูลเทรดไปเทรน AI ภายนอก (ดีฟอลต์ csv)\n"
         "/pause — ⏸️ หยุดเปิดไม้ใหม่ชั่วคราว (ไม้เก่ายังจัดการต่อ)\n"
         "/resume — ▶️ กลับมาเปิดไม้อัตโนมัติ\n"
         "/reset_daily — 🔄 รีเซ็ตโควต้าขาดทุนต่อวัน (นับใหม่จากตอนนี้)\n"
@@ -1206,6 +1207,26 @@ def main():
                         except Exception:  # noqa: BLE001
                             pass
                         tg.send_text(token, chat, learn.edge_report())
+                    elif cmd == "export":
+                        # /export [csv|jsonl] — ส่งออกข้อมูลเทรน AI เป็นไฟล์เข้า Telegram
+                        try:
+                            learn.attach_outcomes()        # อัปเดตผลล่าสุดก่อน export
+                        except Exception:  # noqa: BLE001
+                            pass
+                        _fmt = args[0].lower() if args else "csv"
+                        if _fmt not in ("csv", "jsonl"):
+                            _fmt = "csv"
+                        _path = learn.export(_fmt)
+                        if not _path:
+                            tg.send_text(token, chat,
+                                         "📭 ยังไม่มีข้อมูลเทรดให้ export (ต้องมีไม้เปิด/ปิดก่อน)")
+                        else:
+                            _ov = learn.overview()
+                            _cap = (f"📊 ข้อมูลเทรน AI ({_fmt.upper()})\n"
+                                    f"ปิดแล้ว {_ov['n']} ไม้ · เปิดอยู่ {_ov['open']} ไม้\n"
+                                    "ใช้ feed ML/fine-tune ภายนอกได้")
+                            if not tg.send_document(token, chat, _path, _cap):
+                                tg.send_text(token, chat, "⚠️ ส่งไฟล์ไม่สำเร็จ — ดู log")
                     elif cmd == "reset_daily":
                         # รีเซ็ตโควต้าขาดทุนต่อวัน — นับใหม่จาก PnL ปัจจุบัน
                         try:

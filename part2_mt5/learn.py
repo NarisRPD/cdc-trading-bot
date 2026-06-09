@@ -39,6 +39,43 @@ def _save(data: list) -> None:
         log.warning("save learn failed: %s", e)
 
 
+def export(fmt: str = "csv") -> "str | None":
+    """ส่งออก part2_trades.json → ไฟล์ CSV หรือ JSONL สำหรับเทรน ML/fine-tune ภายนอก
+    คืน path ของไฟล์ที่สร้าง · None ถ้ายังไม่มีข้อมูล
+    - csv  : เปิดใน Excel/pandas ได้ทันที (utf-8-sig กัน Thai เพี้ยน · candles join ด้วย |)
+    - jsonl: 1 ไม้/บรรทัด — เหมาะ feed เข้า pipeline ML โดยตรง"""
+    recs = _load()
+    if not recs:
+        return None
+    fmt = (fmt or "csv").lower()
+    if fmt not in ("csv", "jsonl"):
+        fmt = "csv"
+    out_path = os.path.join(os.path.dirname(__file__), f"part2_trades_export.{fmt}")
+    if fmt == "jsonl":
+        with open(out_path, "w", encoding="utf-8") as f:
+            for r in recs:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    else:
+        import csv
+        # รวม column ทุก key จากทุก record (เผื่อ schema ต่างกันข้ามเวอร์ชัน)
+        cols: list = []
+        seen: set = set()
+        for r in recs:
+            for k in r:
+                if k not in seen:
+                    seen.add(k); cols.append(k)
+        with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+            w.writeheader()
+            for r in recs:
+                row = dict(r)
+                if isinstance(row.get("candles"), list):     # list → string ให้ CSV อ่านง่าย
+                    row["candles"] = "|".join(str(c) for c in row["candles"])
+                w.writerow(row)
+    log.info("learn: export %d ไม้ → %s", len(recs), os.path.basename(out_path))
+    return out_path
+
+
 def record_entry(ticket_id, t: dict) -> None:
     """บันทึกฟีเจอร์ของไม้ตอนเปิด (เรียกหลังเปิดออเดอร์สำเร็จ) — key = position id (เลข order)"""
     try:

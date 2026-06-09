@@ -53,6 +53,30 @@ def send_text(token: str, chat_id: str, text: str) -> None:
     _call(token, "sendMessage", timeout=15, chat_id=chat_id, text=text, disable_web_page_preview=True)
 
 
+def send_document(token: str, chat_id: str, file_path: str, caption: str = "") -> bool:
+    """ส่งไฟล์เข้า Telegram (เช่น export CSV/JSONL ข้อมูลเทรน AI) — คืน True ถ้าสำเร็จ
+    ใช้ multipart (sendDocument) ต่างจาก _call ที่ส่ง json — จึงเขียนแยก"""
+    import requests, os as _os
+    if not _os.path.exists(file_path):
+        log.warning("send_document: ไม่พบไฟล์ %s", file_path)
+        return False
+    try:
+        with open(file_path, "rb") as f:
+            r = requests.post(
+                _API.format(token=token, method="sendDocument"),
+                data={"chat_id": chat_id, "caption": caption[:1024]},
+                files={"document": (_os.path.basename(file_path), f)},
+                timeout=120,
+            )
+        j = r.json()
+        if not j.get("ok"):
+            log.warning("tg sendDocument → %s", j.get("description"))
+        return bool(j.get("ok"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("tg sendDocument failed: %s", str(e).replace(token, "***"))
+        return False
+
+
 def set_commands(token: str) -> None:
     """ลงทะเบียนเมนูคำสั่ง (โผล่ตอนพิมพ์ / ใน Telegram) — เรียกครั้งเดียวตอนเริ่ม"""
     cmds = [
@@ -60,6 +84,7 @@ def set_commands(token: str) -> None:
         {"command": "scan",     "description": "สแกนตลาดทันที — ไม่รอรอบปกติ"},
         {"command": "stats",    "description": "สถิติผลเทรด (win rate · profit factor)"},
         {"command": "insights", "description": "บทเรียน: เทคนิคไหนได้เงินจริง (บอทเรียนรู้)"},
+        {"command": "export",   "description": "ส่งออกข้อมูลเทรด (CSV/JSONL) ไปเทรน AI ภายนอก"},
         {"command": "pause",    "description": "หยุดเปิดไม้ใหม่ชั่วคราว (auto)"},
         {"command": "resume",   "description": "กลับมาเปิดไม้อัตโนมัติ"},
         {"command": "closeall", "description": "ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)"},

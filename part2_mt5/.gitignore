@@ -3,5 +3,9 @@ part2_journal.json
 part2_paused.flag
 part2.lock
 part2.log
+part2.log.*
 config.env
 part2_state.json
+part2_trades_export.csv
+part2_trades_export.jsonl
+part2_trade_meta.json
