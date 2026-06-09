@@ -170,15 +170,20 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
                 "reason": f"RSI({rsi_tf}) {rsi_tf_val:.0f} overbought (ไม่ long ยอดดอย)"}
 
     # ── MTF Alignment Filter — ไม่เข้าสวนเทรนด์ TF ใหญ่ (ลดไม้ "แดงยาวจน SL") ──
-    # ยกเว้นกลยุทธ์ mean-reversion (vwap/rsi_div) ที่สวนเทรนด์โดยตั้งใจ
-    if (cfg.get("USE_MTF_FILTER", "false").lower() in ("1", "true", "yes", "on")
-            and bias.get("source", "") not in _MEAN_REVERSION_SRC):
-        _mtf_tf = cfg.get("MTF_TF", "H1")
-        _htf = _higher_tf_trend(exsym, _mtf_tf, mt5)
-        if (direction == "buy" and _htf == "down") or (direction == "sell" and _htf == "up"):
-            log.info("ข้าม %s — สวนเทรนด์ %s (%s) [MTF filter]", exsym, _mtf_tf, _htf)
-            return {"skipped": True, "exsym": exsym, "direction": direction,
-                    "reason": f"สวนเทรนด์ {_mtf_tf} ({_htf}) — MTF filter"}
+    # ปกติยกเว้น mean-reversion (vwap/rsi_div) ที่สวนเทรนด์โดยตั้งใจ
+    # แต่ MTF_INCLUDE_MEANREV=true → บังคับให้ mean-reversion เคารพ MTF ด้วย
+    #   (เช่น crypto เทรนด์แรง — RSI div/VWAP สวนเทรนด์ = แดงตั้งแต่เข้า → เปิดออปชันนี้กัน)
+    if cfg.get("USE_MTF_FILTER", "false").lower() in ("1", "true", "yes", "on"):
+        _include_mr = cfg.get("MTF_INCLUDE_MEANREV", "false").lower() in ("1", "true", "yes", "on")
+        _is_mr = bias.get("source", "") in _MEAN_REVERSION_SRC
+        if _include_mr or not _is_mr:
+            _mtf_tf = cfg.get("MTF_TF", "H1")
+            _htf = _higher_tf_trend(exsym, _mtf_tf, mt5)
+            if (direction == "buy" and _htf == "down") or (direction == "sell" and _htf == "up"):
+                _mr_tag = " (รวม mean-rev)" if _is_mr else ""
+                log.info("ข้าม %s — สวนเทรนด์ %s (%s) [MTF filter%s]", exsym, _mtf_tf, _htf, _mr_tag)
+                return {"skipped": True, "exsym": exsym, "direction": direction,
+                        "reason": f"สวนเทรนด์ {_mtf_tf} ({_htf}) — MTF filter"}
 
     # ── Anti-chase / closed-bar guard — ไม่ไล่ราคาที่วิ่งไปไกลแล้วในแท่งนี้ ──
     # แท่ง forming ขยับจาก open เกิน CHASE_ATR_MULT×ATR ในทิศเทรด = ไล่ของแพง → เด้งกลับง่าย
