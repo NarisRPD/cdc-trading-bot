@@ -8,6 +8,8 @@ REM ============================================================
 chcp 65001 >nul
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
+REM เก็บ log ในโฟลเดอร์ OneDrive เพื่อ sync ขึ้น cloud อัตโนมัติ (uncomment + แก้ path ให้ตรง VPS)
+REM set PART2_LOG_DIR=C:\Users\Administrator\OneDrive\bot-logs
 cd /d "%~dp0"
 echo running > "part2_should_run.flag"
 :loop

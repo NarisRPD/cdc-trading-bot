@@ -2,6 +2,8 @@
 chcp 65001 >nul
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
+:: เก็บ log ในโฟลเดอร์ OneDrive เพื่อ sync ขึ้น cloud อัตโนมัติ (uncomment + แก้ path ให้ตรงเครื่อง)
+:: set PART2_LOG_DIR=C:\Users\Beast\OneDrive\bot-logs
 :: %~dp0 = directory ของ bat file เอง (ใช้ได้ทั้ง local และ VPS ไม่ต้อง hardcode path)
 cd /d "%~dp0"
 :: สร้าง flag ถ้ายังไม่มี (ถูกลบโดย /stop → ต้องสร้างใหม่เมื่อ start)

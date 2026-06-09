@@ -34,7 +34,14 @@ from run import _watchlist
 # ตัดทุกเที่ยงคืน → part2.log (วันนี้) + part2.log.YYYY-MM-DD (2 วันก่อน) · backupCount=2
 # *** .bat ต้องรัน `python interactive.py` เฉย ๆ (ห้าม >> part2.log 2>&1) ไม่งั้นเขียนซ้ำ/rotate พัง ***
 from logging.handlers import TimedRotatingFileHandler
-_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "part2.log")
+# path ของ log ตั้งค่าได้ผ่าน env PART2_LOG_DIR → ชี้ไปโฟลเดอร์ OneDrive/Drive
+# เพื่อให้ cloud sync ไฟล์ขึ้นอัตโนมัติ (เปิดดูจากมือถือ/คอมบ้านได้สด) · ดีฟอลต์ = โฟลเดอร์ script
+_LOG_DIR = os.getenv("PART2_LOG_DIR", "").strip() or os.path.dirname(os.path.abspath(__file__))
+try:
+    os.makedirs(_LOG_DIR, exist_ok=True)
+except OSError:
+    _LOG_DIR = os.path.dirname(os.path.abspath(__file__))   # path เสีย → fallback โฟลเดอร์ script
+_LOG_FILE = os.path.join(_LOG_DIR, "part2.log")
 _log_fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 _file_handler = TimedRotatingFileHandler(_LOG_FILE, when="midnight", interval=1,
                                          backupCount=2, encoding="utf-8")
