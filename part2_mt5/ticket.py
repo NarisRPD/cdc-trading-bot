@@ -37,6 +37,12 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # ประเภทสินทรัพย์ — ใช้ตลอด function (spread / RSI threshold)
     _sym_cat = market_hours.category(exsym)
 
+    # ปิดเทรด FX ทั้งหมดถ้า TRADE_FX=false (FX ขยับน้อย — ผู้ใช้เลี่ยง) · จุดเดียวคุมทุกกลยุทธ์
+    if _sym_cat == "fx" and cfg.get("TRADE_FX", "true").lower() not in ("1", "true", "yes", "on"):
+        log.debug("ข้าม %s — ปิดเทรด FX (TRADE_FX=false)", exsym)
+        return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                "reason": "ปิดเทรด FX (TRADE_FX=false)"}
+
     # ตรวจตลาดเปิดอยู่ไหม — ข้ามเงียบถ้าปิด (ลด Gemini call + log noise)
     # หุ้น US นอกเวลา: spread กว้าง 5–10× ปกติ → ไม่มีประโยชน์สแกน
     if not market_hours.is_open(exsym):
