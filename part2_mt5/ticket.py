@@ -43,6 +43,15 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
                 "reason": "ปิดเทรด FX (TRADE_FX=false)"}
 
+    # ปิดดัชนีที่ไม่ใช่ US ถ้า TRADE_INDEX=false — ยกเว้น allowlist (ดีฟอลต์ ญี่ปุ่น JP225 + ฮ่องกง HK50)
+    # ดัชนี US (category us_index) ไม่โดน guard นี้ — เทรดได้ปกติ
+    if _sym_cat == "index" and cfg.get("TRADE_INDEX", "true").lower() not in ("1", "true", "yes", "on"):
+        _idx_allow = [a.strip().upper() for a in cfg.get("INDEX_ALLOW", "JP225,HK50").split(",") if a.strip()]
+        if not any(exsym.upper().startswith(a) for a in _idx_allow):
+            log.debug("ข้าม %s — ปิดเทรดดัชนี (TRADE_INDEX=false · ไม่อยู่ใน allowlist)", exsym)
+            return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                    "reason": "ปิดเทรดดัชนี (TRADE_INDEX=false)"}
+
     # ตรวจตลาดเปิดอยู่ไหม — ข้ามเงียบถ้าปิด (ลด Gemini call + log noise)
     # หุ้น US นอกเวลา: spread กว้าง 5–10× ปกติ → ไม่มีประโยชน์สแกน
     if not market_hours.is_open(exsym):
