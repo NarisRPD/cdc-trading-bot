@@ -92,6 +92,33 @@ def _has_reversal_candle(sym: str, direction: str, tf_str: str = "M5") -> bool:
         return False
 
 
+def _trend_against(sym: str, direction: str, tf_str: str = "M15") -> bool:
+    """Multi-signal exit: True ถ้า SuperTrend บน TF นี้ 'พลิกสวนทาง' position แล้ว
+    direction = ทิศของ position (buy/sell) · ใช้ปิดไม้เมื่อเทคนิคเทรนด์เปลี่ยนข้าง
+    (ต่างจาก reversal candle ที่ดูแค่แท่งเดียว — อันนี้ดูทิศเทรนด์ทั้งระบบ)"""
+    import MetaTrader5 as m5
+    _tf_map = {
+        "M1": m5.TIMEFRAME_M1, "M5": m5.TIMEFRAME_M5,
+        "M15": m5.TIMEFRAME_M15, "H1": m5.TIMEFRAME_H1,
+    }
+    tf = _tf_map.get(tf_str.upper(), m5.TIMEFRAME_M15)
+    try:
+        rates = m5.copy_rates_from_pos(sym, tf, 0, 60)
+        if rates is None or len(rates) < 30:
+            return False
+        import pandas as pd, scalp
+        df = pd.DataFrame(rates)
+        df.columns = [c.lower() for c in df.columns]
+        res = scalp.supertrend(df)
+        if res.get("st") is None:
+            return False
+        cur_dir = int(res["direction"][-1])     # +1 = ขาขึ้น (buy) · -1 = ขาลง (sell)
+        # position buy → เทรนด์ต้องเป็น -1 (ลง) ถึงนับว่าสวน · sell → เทรนด์เป็น +1 (ขึ้น)
+        return (direction == "buy" and cur_dir == -1) or (direction == "sell" and cur_dir == 1)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def manage_positions(cfg: dict, balance: float = 0) -> None:
     """จัดการไม้แบบ R-multiple — แยก partial close จาก breakeven trigger:
       ถึง +PARTIAL_AT_R  → ปิดบางส่วน (เก็บกำไรก้อนแรก)
@@ -115,6 +142,12 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
     use_rev_exit  = cfg.get("USE_REVERSAL_EXIT", "false").lower() in ("1", "true", "yes", "on")
     rev_min_r     = float(cfg.get("REVERSAL_EXIT_MIN_R", "0.5"))   # min R ก่อนเช็ค reversal
     rev_tf        = cfg.get("REVERSAL_EXIT_TF",   "M5")            # TF ตรวจ reversal candle
+
+    # Multi-signal exit — ปิดเมื่อ SuperTrend (เทคนิคเทรนด์) พลิกสวนทาง position
+    # ต่างจาก reversal candle: อันนี้ดู "ทิศเทรนด์ทั้งระบบ" ไม่ใช่แค่แท่งเดียว
+    use_multi_exit = cfg.get("USE_MULTI_SIGNAL_EXIT", "false").lower() in ("1", "true", "yes", "on")
+    multi_min_r    = float(cfg.get("MULTI_EXIT_MIN_R", "0.3"))     # min R ก่อนเช็ค (กันออกเร็วหลังเพิ่งเข้า)
+    multi_tf       = cfg.get("MULTI_EXIT_TF", "M15")               # TF ตรวจ SuperTrend flip
 
     # 0) TP ก่อนตลาดปิด — ปิดไม้ที่ตลาดใกล้ปิด ถ้า "ไม้กำไร" หรือ "พอร์ตวันนี้เขียว" (ไม่รวม crypto)
     if cfg.get("CLOSE_BEFORE_MARKET_CLOSE", "true").lower() in ("1", "true", "yes", "on"):
@@ -179,13 +212,21 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
 
         # ── 2) Partial close ที่ PARTIAL_AT_R (ล็อกกำไรก้อนแรก) ───────────
         if not st["partial_done"] and rmult >= partial_at:
-            if tp_pct <= 0:          # โหมด price-% TP ไม่ปิดบางส่วน
+            if tp_pct <= 0:          # โหมด R-multiple → ปิดบางส่วนจริง
                 half = _round_vol(p.volume * ratio, p.symbol)
                 if 0 < half < p.volume:
                     if execute.close_position(p, half).get("ok"):
                         log.info("💰 ปิดบางส่วน %.2f lot ที่ +%.2fR %s (SL ยังที่เดิม รอ %.1fR ค่อยบังทุน)",
                                  half, rmult, p.symbol, breakeven_at)
-            st["partial_done"] = True
+                        st["partial_done"] = True   # มาร์คเฉพาะตอนปิดสำเร็จ
+                    # โบรกปฏิเสธ (retcode != 10009) → partial_done คง False → ลองใหม่รอบหน้า
+                    # กันบั๊ก: ถ้ามาร์คทั้งที่ปิดไม่ติด บอทจะเลื่อน SL เท่าทุนทั้งที่ยังไม่ได้ล็อกกำไร
+                else:
+                    # ไม้เล็กเกินจะแบ่ง (half ปัด = 0 หรือ ≥ volume) → ข้าม partial ไปเลย
+                    # ไม่งั้นค้างที่ partial_done=False ตลอด → breakeven/trailing ไม่ทำงาน
+                    st["partial_done"] = True
+            else:                    # โหมด price-% TP: ไม่ปิดบางส่วนจริง แค่มาร์คผ่าน step นี้
+                st["partial_done"] = True
             # *** ไม่ขยับ SL ทันที — รอถึง BREAKEVEN_AT_R ก่อน ให้ราคามีพื้นที่หายใจ ***
             continue
 
@@ -219,6 +260,23 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
             if _last is not None and len(_last) > 0:
                 if int(_last[0]["time"]) != st["rev_checked_bar"]:
                     st.pop("rev_checked_bar", None)
+
+        # ── 4b) Multi-signal exit (optional) — ปิดเมื่อ SuperTrend พลิกสวนทาง ─
+        # เข้าด้วยเทคนิคไหนก็ได้ แต่ถ้าเทรนด์ระบบ (SuperTrend) เปลี่ยนข้าง → ออกตามสัญญาณใหม่
+        # throttle ต่อแท่ง (กันเรียก MT5/คำนวณ SuperTrend ซ้ำทุกวิ)
+        if use_multi_exit and rmult >= multi_min_r:
+            import MetaTrader5 as _m5
+            _bar = _m5.copy_rates_from_pos(p.symbol, _m5.TIMEFRAME_M5, 0, 1)
+            _bar_t = int(_bar[0]["time"]) if (_bar is not None and len(_bar) > 0) else 0
+            if st.get("multi_checked_bar") != _bar_t:        # แท่งใหม่ → เช็คได้อีกครั้ง
+                st["multi_checked_bar"] = _bar_t
+                direction = "buy" if is_buy else "sell"
+                if _trend_against(p.symbol, direction, multi_tf):
+                    if execute.close_position(p).get("ok"):
+                        log.info("🔀 Multi-signal exit: SuperTrend(%s) พลิกสวน (+%.2fR) → ปิด %s (#%s)",
+                                 multi_tf, rmult, p.symbol, p.ticket)
+                        _state.pop(p.ticket, None)
+                        continue
 
         # ── 5) Trailing SL — เริ่มหลัง breakeven เท่านั้น ─────────────────
         # dist = max(R×factor, ATR×factor) ป้องกัน noise ในตลาดผันผวน

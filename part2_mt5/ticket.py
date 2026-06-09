@@ -68,6 +68,14 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
                 "reason": f"ช่วงเปิด/ปิดตลาด US (volatile window {_open_skip}/{_close_skip}min)"}
 
+    # Auto-disable เทคนิคที่แพ้: กลยุทธ์/symbol ที่ win-rate ต่ำกว่าเกณฑ์ในข้อมูลจริง → ข้ามเงียบ
+    # (ใช้ผลเทรดจริงนำ — block เฉพาะตัวที่มีหลักฐานแพ้ชัด · ดู learn.should_skip)
+    _skip, _skip_reason = learn.should_skip(bias.get("source", ""), exsym, cfg)
+    if _skip:
+        log.info("⛔ ข้าม %s — %s", exsym, _skip_reason)
+        return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                "reason": _skip_reason}
+
     # เกราะพอร์ตขั้นต่ำสำหรับโลหะ: ทอง/เงินไม้ขั้นต่ำ (0.01 lot) ใหญ่เกินพอร์ตเล็ก
     # → ปลดล็อกให้เทรดเมื่อพอร์ตถึงเกณฑ์ (GOLD_MIN_BALANCE / SILVER_MIN_BALANCE) อัตโนมัติ
     _u = exsym.upper()
@@ -317,6 +325,15 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         confluence_boosted = True
         log.info("🔗 Confluence %s %s — %d กลยุทธ์เห็นพ้อง (%s) → risk %.2f%%",
                  exsym, direction, _confl_n, "+".join(_confl_srcs), risk_pct)
+
+    # ── Auto lot by edge ──────────────────────────────────────────────────────
+    # ปรับ lot ตาม edge จริงของกลยุทธ์ (avg R-multiple จากผลเทรด) — edge ดี×ใหญ่ขึ้น · แย่×เล็กลง
+    # cap ที่ MAX_RISK_PCT เสมอ · ปิดฟีเจอร์/ข้อมูลน้อย → multiplier = 1.0 (ไม่ปรับ)
+    edge_mult = learn.edge_multiplier(_source, cfg)
+    if edge_mult != 1.0:
+        _cap2 = float(cfg.get("MAX_RISK_PCT", "2.0"))
+        risk_pct = min(risk_pct * edge_mult, _cap2)
+        log.info("📊 Edge sizing %s (%s) — ×%.2f → risk %.2f%%", exsym, _source or "?", edge_mult, risk_pct)
 
     sizing = mt5.lots_for_risk(exsym, used_bal, risk_pct, spot, sl)
 

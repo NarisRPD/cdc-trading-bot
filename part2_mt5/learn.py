@@ -312,6 +312,74 @@ def edge_report(min_bucket: int = 3) -> str:
     return "\n".join(lines)
 
 
+def _clean_symbol(sym: str) -> str:
+    """ตัด suffix โบรก (ETHUSDm → ETHUSD) เพื่อรวมสถิติ symbol เดียวกัน"""
+    s = (sym or "").upper()
+    return s[:-1] if (s.endswith("M") and len(s) > 4) else s
+
+
+def source_stats(min_trades: int = 1) -> dict:
+    """สถิติแยกตามกลยุทธ์ (source) จากไม้ปิด → {source: {n, win_rate, avg_r, total}}
+    ใช้สำหรับ auto-disable + auto lot by edge"""
+    closed = _closed()
+    by_src: dict = {}
+    for r in closed:
+        s = r.get("source")
+        if s:
+            by_src.setdefault(s, []).append(r)
+    return {s: _bucket_stats(rs) for s, rs in by_src.items() if len(rs) >= min_trades}
+
+
+def symbol_stats(min_trades: int = 1) -> dict:
+    """สถิติแยกตาม symbol (ตัด suffix โบรก) → {symbol: {n, win_rate, avg_r, total}}"""
+    closed = _closed()
+    by_sym: dict = {}
+    for r in closed:
+        sym = _clean_symbol(r.get("symbol", ""))
+        if sym:
+            by_sym.setdefault(sym, []).append(r)
+    return {s: _bucket_stats(rs) for s, rs in by_sym.items() if len(rs) >= min_trades}
+
+
+def should_skip(source: str, symbol: str, cfg: dict) -> "tuple[bool, str]":
+    """Auto-disable เทคนิคที่แพ้: source หรือ symbol ที่ win-rate ต่ำกว่าเกณฑ์ใน ≥N ไม้ → ข้าม
+    คืน (skip, reason) · เปิด/ปิดผ่าน AUTO_DISABLE_LOSERS
+
+    *** ใช้ข้อมูลจริงนำ — block เฉพาะตัวที่มีหลักฐานแพ้ชัด (ตัวอย่างพอ + win-rate ต่ำจริง) ***"""
+    if cfg.get("AUTO_DISABLE_LOSERS", "true").lower() not in ("1", "true", "yes", "on"):
+        return (False, "")
+    min_n = int(cfg.get("AUTO_DISABLE_MIN_TRADES", "8") or "8")
+    min_wr = float(cfg.get("AUTO_DISABLE_WINRATE", "35") or "35")
+    st = source_stats(min_n).get(source)
+    if st and st["win_rate"] < min_wr:
+        return (True, f"กลยุทธ์ '{source}' ชนะ {st['win_rate']:.0f}% < {min_wr:.0f}% ({st['n']} ไม้) — auto-disable")
+    syt = symbol_stats(min_n).get(_clean_symbol(symbol))
+    if syt and syt["win_rate"] < min_wr:
+        return (True, f"{_clean_symbol(symbol)} ชนะ {syt['win_rate']:.0f}% < {min_wr:.0f}% ({syt['n']} ไม้) — auto-disable")
+    return (False, "")
+
+
+def edge_multiplier(source: str, cfg: dict) -> float:
+    """Auto lot by edge: คืนตัวคูณ lot ตาม edge จริงของกลยุทธ์ (avg R-multiple)
+      avg_r ≤ 0      → EDGE_SIZING_MIN_MULT (เล็กสุด · กลยุทธ์ขาดทุน)
+      avg_r ≥ 1R     → EDGE_SIZING_MAX_MULT (ใหญ่สุด · edge ดีเยี่ยม)
+      ระหว่างนั้น linear · ข้อมูลน้อย/ปิดฟีเจอร์ → 1.0 (กลาง ไม่ปรับ)"""
+    if cfg.get("USE_EDGE_SIZING", "false").lower() not in ("1", "true", "yes", "on"):
+        return 1.0
+    min_n = int(cfg.get("EDGE_SIZING_MIN_TRADES", "10") or "10")
+    st = source_stats(min_n).get(source)
+    if not st or st.get("avg_r") is None:
+        return 1.0
+    avg_r = st["avg_r"]
+    lo = float(cfg.get("EDGE_SIZING_MIN_MULT", "0.5") or "0.5")
+    hi = float(cfg.get("EDGE_SIZING_MAX_MULT", "1.5") or "1.5")
+    if avg_r <= 0:
+        return lo
+    if avg_r >= 1.0:
+        return hi
+    return round(lo + (hi - lo) * avg_r, 2)   # avg_r 0→lo · 1R→hi
+
+
 def summary_for_ai(min_total: int = 10, min_bucket: int = 5) -> str:
     """สรุปบทเรียนสั้น ๆ ป้อนเข้า Gemini เป็น 'ความจำ' — คืน '' ถ้าข้อมูลยังน้อย (กันชี้นำผิด)"""
     closed = _closed()
