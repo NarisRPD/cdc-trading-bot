@@ -649,21 +649,27 @@ def _scan_rsi_div(cfg, broker: set) -> list:
 
 
 def _scan_orb_pro(cfg, broker: set) -> list:
-    """Opening Range Breakout (Toby Crabel) — สแกน FX pairs เท่านั้น
-    รองรับ London (07 UTC) และ NY (13 UTC) session ผ่าน ORB_SESSION config
-    ORB_SESSION=both → รันทั้ง 2 session"""
+    """Opening Range Breakout (Toby Crabel)
+    session → ประเภทสินทรัพย์: london/ny = FX pairs · us = ดัชนี US (US30/USTEC/US500)
+    ORB_SESSION: comma-separated เช่น "london,us" · "both" = london,ny (backward compat)
+    หมายเหตุ us: build_ticket ยกเว้น volatile-window guard ให้ source orb_pro —
+    ORB คือกลยุทธ์เดียวที่ออกแบบมาเล่นช่วง open โดยเฉพาะ (SL สั้นใต้กรอบ + window จำกัด)"""
     import scalp as _scalp, market_hours, pandas as pd
     sessions_raw = cfg.get("ORB_SESSION", "london").lower().strip()
-    sessions     = ["london", "ny"] if sessions_raw == "both" else [sessions_raw]
+    if sessions_raw == "both":
+        sessions = ["london", "ny"]
+    else:
+        sessions = [s.strip() for s in sessions_raw.split(",") if s.strip()]
     range_bars   = int(cfg.get("ORB_RANGE_BARS",  "3"))
     window_min   = int(cfg.get("ORB_WINDOW_MIN",  "90"))
     rr           = float(cfg.get("ORB_RR",        "1.5"))
     stale_min    = 20
     out = []
     for session in sessions:
+        # us session = ดัชนี US (เปิด 13:30 UTC ชัดเจน gap น้อยกว่าหุ้นเดี่ยว) · อื่นๆ = FX
+        want_cat = "us_index" if session == "us" else "fx"
         for sym in _watchlist(cfg, broker):
-            # ORB เหมาะกับ FX เท่านั้น (ตลาดมี session open ชัดเจน)
-            if market_hours.category(sym) != "fx":
+            if market_hours.category(sym) != want_cat:
                 continue
             df = m.rates(sym, "M5", 200)
             if df is None or len(df) < 30 or "time" not in df.columns:

@@ -981,11 +981,12 @@ def rsi_divergence_signal(df, rsi_period: int = 14, lookback: int = 30,
 
 
 def orb_session_signal(df, session: str = "london", range_bars: int = 3,
-                       trade_window_min: int = 90) -> dict:
+                       trade_window_min: int = 90, now=None) -> dict:
     """Opening Range Breakout — Toby Crabel (1990) ใช้ใน hedge fund 30+ ปี
 
     สร้าง opening range จาก N bars แรกของ session แล้วรอทะลุ
-    - London open: 07:00 UTC · NY open: 13:00 UTC
+    - London open: 07:00 UTC · NY open (FX): 13:00 UTC · US cash open: 13:30 UTC
+    - now: ฉีดเวลาได้สำหรับ test (default = เวลาปัจจุบัน UTC)
     - range_bars × 5 นาที = ความกว้างกรอบ (3 bars = 15 นาที)
     - trade_window_min: ปิดโอกาสหลัง N นาที (กัน false breakout ตอนบ่าย)
     - กัน late entry: bars ก่อนทะลุไปแล้ว → ไม่เข้า
@@ -995,8 +996,9 @@ def orb_session_signal(df, session: str = "london", range_bars: int = 3,
     _E = {"detected": False}
     try:
         from datetime import datetime as _dt, timezone as _tz
-        _SESSION_H = {"london": 7, "ny": 13, "asia": 0, "tokyo": 0}
-        open_h = _SESSION_H.get(session.lower(), 7)
+        # (ชั่วโมง, นาที) UTC — "us" = ตลาดหุ้น/ดัชนี US เปิดจริง 13:30 UTC (20:30 ไทย summer)
+        _SESSION_HM = {"london": (7, 0), "ny": (13, 0), "us": (13, 30), "asia": (0, 0), "tokyo": (0, 0)}
+        open_h, open_m = _SESSION_HM.get(session.lower(), (7, 0))
 
         if not hasattr(df, "columns"):
             df = pd.DataFrame(df)
@@ -1009,8 +1011,8 @@ def orb_session_signal(df, session: str = "london", range_bars: int = 3,
         else:
             df["utc"] = df["time"].dt.tz_localize("UTC") if df["time"].dt.tz is None else df["time"]
 
-        now_utc   = _dt.now(_tz.utc)
-        open_utc  = now_utc.replace(hour=open_h, minute=0, second=0, microsecond=0)
+        now_utc   = now or _dt.now(_tz.utc)
+        open_utc  = now_utc.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
         # ใช้ datetime.timedelta แทน pd.Timedelta เพราะ open_utc เป็น datetime.datetime
         # pd.Timedelta + datetime → pd.Timestamp ซึ่งเปรียบต่างกับ datetime ได้แต่ fragile
         from datetime import timedelta as _td

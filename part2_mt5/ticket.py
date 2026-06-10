@@ -88,9 +88,12 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
 
     # ตรวจช่วง opening/closing range ของตลาด US — volatility พุ่ง สัญญาณ false เยอะ
     # Opening: 30 นาทีแรกหลัง 20:30 ไทย · Closing: 15 นาทีก่อน 03:00 ไทย
+    # ยกเว้น orb_pro — กลยุทธ์เดียวที่ออกแบบมาเล่นช่วง open โดยเฉพาะ
+    # (opening range + SL สั้นใต้กรอบ + trade window จำกัด = มีเกราะของตัวเองครบ)
     _open_skip  = int(cfg.get("US_OPEN_SKIP_MIN",  "30") or "30")
     _close_skip = int(cfg.get("US_CLOSE_SKIP_MIN", "15") or "15")
-    if market_hours.in_volatile_window(exsym, _open_skip, _close_skip):
+    if (bias.get("source") != "orb_pro"
+            and market_hours.in_volatile_window(exsym, _open_skip, _close_skip)):
         log.debug("ข้าม %s — ช่วง opening/closing range US (skip %d/%d นาที)", exsym, _open_skip, _close_skip)
         return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
                 "reason": f"ช่วงเปิด/ปิดตลาด US (volatile window {_open_skip}/{_close_skip}min)"}
