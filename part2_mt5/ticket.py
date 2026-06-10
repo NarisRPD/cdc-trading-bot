@@ -36,6 +36,11 @@ def _atr(df, n: int = 14) -> float:
 # กลยุทธ์ "สวนเทรนด์โดยตั้งใจ" (mean-reversion) — ไม่บังคับ MTF align (ไม่งั้นตัดทิ้งหมด)
 _MEAN_REVERSION_SRC = {"vwap", "rsi_div", "range_mr"}
 
+# กลยุทธ์ที่ยกเว้น regime filter: mean-rev (range คือ edge ของมัน) + rvol_brk
+# (RVOL spurt = หลักฐานว่า regime เพิ่งเปลี่ยน — ADX H1 เป็น lagging ตามไม่ทัน
+#  ถ้าไม่ยกเว้น breakout จาก consolidation จะโดนบล็อกว่า "range" ทุกครั้ง)
+_REGIME_EXEMPT_SRC = _MEAN_REVERSION_SRC | {"rvol_brk"}
+
 # กลยุทธ์ scalp/สั้น ที่ Pro Scalping Filters เหมาะ (Kill Zone/Liquidity/Momentum/VWAP)
 # ไม่รวม trend H1 (supertrend/halftrend/pa) เพราะ Kill Zone จะบล็อกนอก session ผิดเจตนา
 _SCALP_FILTER_SRC = {"vwap", "rsi_div", "bb_squeeze", "ema_m5", "orb_pro",
@@ -156,6 +161,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         "orb_pro":    "M5",
         "fx_orb":     "M5",
         "range_mr":   cfg.get("RANGE_MR_TF", "M15"),
+        "rvol_brk":   cfg.get("RVOL_TF", "M15"),
     }
     rsi_tf = _rsi_tf_map.get(bias.get("source", ""), entry_tf)   # fallback → entry_tf
     if rsi_tf.upper() != entry_tf.upper():
@@ -209,7 +215,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # กลยุทธ์ตามเทรนด์ (mean-reversion ยกเว้น — edge ของมันคือ range พอดี)
     # ต่างจาก MTF filter: MTF กัน "สวนเทรนด์" · regime กัน "ไม่มีเทรนด์ให้ตาม"
     if (cfg.get("USE_REGIME_FILTER", "false").lower() in ("1", "true", "yes", "on")
-            and bias.get("source", "") not in _MEAN_REVERSION_SRC):
+            and bias.get("source", "") not in _REGIME_EXEMPT_SRC):
         import regime as _regime
         _rg_tf = cfg.get("REGIME_TF", "H1")
         _rg_df = mt5.rates(exsym, _rg_tf, 120)

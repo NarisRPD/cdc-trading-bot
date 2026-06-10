@@ -386,6 +386,49 @@ def _scan_scalp(cfg, broker: set) -> list:
     return out
 
 
+def _scan_rvol_brk(cfg, broker: set) -> list:
+    """RVOL Spurt + Breakout — จับสินทรัพย์ "In-Play" (volume ผิดปกติ = มี catalyst)
+    แล้วเข้าเฉพาะแท่งแรกที่เบรค high/low สำคัญ (เกราะอยู่ใน rvol.signal)
+    SL ใต้แท่งเบรค · TP = rr × ระยะ SL · regime filter ยกเว้นให้ (volume spurt
+    คือหลักฐานว่า regime เพิ่งเปลี่ยน — H1 ADX ยัง lag ตามไม่ทัน)"""
+    import rvol as _rvol
+    import pandas as pd
+    tf = cfg.get("RVOL_TF", "M15")
+    rr = float(cfg.get("RVOL_RR", "1.8"))
+    baseline_days = int(cfg.get("RVOL_BASELINE_DAYS", "5") or "5")
+    bars_need = max(96 * (baseline_days + 1), 500)   # M15: 96 แท่ง/วัน × (baseline+วันนี้)
+    out = []
+    for sym in _watchlist(cfg, broker):
+        if market_hours.category(sym) == "fx":           # นโยบายเดียวกับ scanner อื่น
+            continue
+        df = m.rates(sym, tf, bars_need)
+        if df is None or len(df) < 200 or "time" not in df.columns:
+            continue
+        try:                                             # breakout ไวต่อเวลา — stale 20 นาทีพอ
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > 20:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _rvol.signal(
+            df,
+            window_bars=int(cfg.get("RVOL_WINDOW_BARS", "4") or "4"),
+            baseline_days=baseline_days,
+            rvol_min=float(cfg.get("RVOL_MIN", "2.0") or "2.0"),
+            break_bars=int(cfg.get("RVOL_BREAK_BARS", "32") or "32"),
+            body_min=float(cfg.get("RVOL_BODY_MIN", "0.5") or "0.5"),
+        )
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "zone": None, "rsi": None,
+                     "source": "rvol_brk",
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"RVOL Brk {tf} — {sig['reason']}"}}, None))
+    if out:
+        log.info("rvol_brk(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
 def _scan_range_mr(cfg, broker: set) -> list:
     """สแกน Range-Edge Mean Reversion — เข้าเฉพาะขอบกรอบ sideways ที่กว้างพอ
     (เกราะอยู่ใน range_mr.signal: กรอบ ≥ N×ATR · ADX ต่ำ · แตะขอบซ้ำ · rejection)
@@ -1192,6 +1235,7 @@ def main():
     use_rsi_div   = cfg.get("USE_RSI_DIV",   "false").lower() in ("1", "true", "yes", "on")  # RSI Divergence M5
     use_orb_pro   = cfg.get("USE_ORB_PRO",   "false").lower() in ("1", "true", "yes", "on")  # ORB London/NY session
     use_range_mr  = cfg.get("USE_RANGE_MR",  "false").lower() in ("1", "true", "yes", "on")  # Range-edge mean reversion (ตลาด sideways)
+    use_rvol_brk  = cfg.get("USE_RVOL_BRK",  "false").lower() in ("1", "true", "yes", "on")  # RVOL spurt + breakout (in-play momentum)
     max_pos = int(cfg.get("MAX_OPEN_POSITIONS", "5"))
     notify_scan = cfg.get("NOTIFY_SCAN", "false").lower() in ("1", "true", "yes", "on")
     max_dd = float(cfg.get("MAX_DRAWDOWN_PCT", "0") or "0")        # เบรกขาดทุนสะสม (0=ปิด)
@@ -1639,6 +1683,8 @@ def main():
                             queue += _scan_fx_orb(cfg, syms)
                         if use_range_mr and auto_on:       # Range-edge mean reversion (ตลาด sideways)
                             queue += _scan_range_mr(cfg, syms)
+                        if use_rvol_brk and auto_on:       # RVOL spurt + breakout (in-play momentum)
+                            queue += _scan_rvol_brk(cfg, syms)
                         if use_hybrid and auto_on:         # Hybrid-Pro H1+M15
                             queue += _scan_hybrid(cfg, syms)
                         if use_pa:                         # Price Action & Market Structure H1
