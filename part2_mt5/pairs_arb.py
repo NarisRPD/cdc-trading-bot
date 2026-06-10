@@ -37,6 +37,8 @@ log = logging.getLogger("part2.pairs")
 _MAGIC = 260606                      # แยกจาก Part 2 หลัก (260605) — ระบบอื่นไม่แตะขา pair
 _FILE = os.path.join(os.path.dirname(__file__), "part2_pairs.json")
 _last_check = 0.0                    # throttle
+_fail_until: dict = {}               # {pair_id: ts} — cooldown หลังเปิดขาไม่สำเร็จ
+                                     # (กัน churn: z ค้างสูง → ลองใหม่ทุก tick → เปิด/ปิดขา A ซ้ำๆ เสีย spread ฟรี)
 
 
 # ── state ──────────────────────────────────────────────────────────────────
@@ -272,6 +274,8 @@ def _tick_inner(cfg: dict, mt5c, token: str, chat: str) -> None:
         # ── หา entry ใหม่ ────────────────────────────────────────────────
         if len(state) >= max_open:
             continue
+        if time.time() < _fail_until.get(pid, 0):
+            continue                               # เพิ่งเปิดขาไม่สำเร็จ — พัก cooldown ก่อน
         if abs(z) < z_entry or abs(z) >= z_stop:
             continue
         if zs["corr"] < min_corr:
@@ -286,14 +290,18 @@ def _tick_inner(cfg: dict, mt5c, token: str, chat: str) -> None:
         if lots_a <= 0 or lots_b <= 0:
             continue
 
+        _cool = float(_cfgf(cfg, "PAIRS_FAIL_COOLDOWN_MIN", 30)) * 60
         leg_a = _open_leg(sym_a, dir_a, lots_a, cat_sl)
         if not leg_a:
+            _fail_until[pid] = time.time() + _cool
+            log.warning("pairs %s: ขา A ไม่ติด → พัก %d นาที", pid, int(_cool / 60))
             continue
         leg_b = _open_leg(sym_b, dir_b, lots_b, cat_sl)
         if not leg_b:
             # ขา B ไม่ติด → ปิดขา A ทันที (ห้ามถือขาเดียว — ไม่ใช่ stat-arb แล้ว)
             _close_leg(leg_a["ticket"])
-            log.warning("pairs %s: ขา B ไม่ติด → ยกเลิกขา A แล้ว", pid)
+            _fail_until[pid] = time.time() + _cool
+            log.warning("pairs %s: ขา B ไม่ติด → ยกเลิกขา A แล้ว · พัก %d นาที", pid, int(_cool / 60))
             continue
 
         state[pid] = {
