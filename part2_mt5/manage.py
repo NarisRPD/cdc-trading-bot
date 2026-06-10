@@ -140,6 +140,12 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
     tfac        = float(cfg.get("TRAIL_FACTOR",    "0.7"))  # ระยะ trailing = max(R, ATR) × factor
     tp_pct      = float(cfg.get("TP_PRICE_PCT",    "0") or "0")  # TP ตาม % (0 = ไม่ใช้)
 
+    # Time stop — "ไม้ที่ไม่วิ่งเร็ว = ไม้ผิด" (กฎ scalper มืออาชีพ)
+    # ⚠️ ขัดกฎ "ขาดทุนไม่ปิด" โดยเจตนา → opt-in เท่านั้น แนะนำทดสอบบน demo ก่อน
+    use_time_stop = cfg.get("USE_TIME_STOP", "false").lower() in ("1", "true", "yes", "on")
+    ts_minutes    = float(cfg.get("TIME_STOP_MIN", "45"))       # อายุไม้ขั้นต่ำก่อนตัดสิน
+    ts_below_r    = float(cfg.get("TIME_STOP_BELOW_R", "0.0"))  # ปิดถ้า R ปัจจุบัน < ค่านี้
+
     # Reversal exit — ปิดก่อนชน SL ถ้าเจอ candle กลับตัวและยังกำไรอยู่
     use_rev_exit  = cfg.get("USE_REVERSAL_EXIT", "false").lower() in ("1", "true", "yes", "on")
     rev_min_r     = float(cfg.get("REVERSAL_EXIT_MIN_R", "0.5"))   # min R ก่อนเช็ค reversal
@@ -207,6 +213,18 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
         if not R or R <= 0:          # ไม่รู้ความเสี่ยงเริ่มต้น → ข้าม
             continue
         rmult = ((cur - p.price_open) if is_buy else (p.price_open - cur)) / R
+
+        # ── 1a) Time stop (optional) — ไม้ที่อายุเกินกำหนดแล้วยังไม่ไปไหน ──
+        # ใช้ tick.time − p.time (server epoch ทั้งคู่ → timezone offset หักล้างกัน)
+        # ไม้ที่ partial แล้ว = พิสูจน์ตัวเองแล้ว ไม่โดน time stop
+        if use_time_stop and not st["partial_done"]:
+            age_min = (tick.time - p.time) / 60.0
+            if age_min >= ts_minutes and rmult < ts_below_r:
+                if execute.close_position(p).get("ok"):
+                    log.info("⏱️ Time stop: %.0f นาทียัง %.2fR (< %.1fR) → ปิด %s (#%s)",
+                             age_min, rmult, ts_below_r, p.symbol, p.ticket)
+                    _state.pop(p.ticket, None)
+                    continue
 
         # ── 1) HARD TP ceiling ───────────────────────────────────────────────
         if tp_pct <= 0 and rmult >= hard_r:

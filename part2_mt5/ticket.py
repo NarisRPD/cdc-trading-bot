@@ -200,6 +200,28 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
                 return {"skipped": True, "exsym": exsym, "direction": direction,
                         "reason": f"สวนเทรนด์ {_mtf_tf} ({_htf}) — MTF filter"}
 
+    # ── Regime filter — "Avoid trading in the middle of a range" ─────────────
+    # ADX+Choppiness+Market Structure บน H1 → ตลาด sideways = no-trade สำหรับ
+    # กลยุทธ์ตามเทรนด์ (mean-reversion ยกเว้น — edge ของมันคือ range พอดี)
+    # ต่างจาก MTF filter: MTF กัน "สวนเทรนด์" · regime กัน "ไม่มีเทรนด์ให้ตาม"
+    if (cfg.get("USE_REGIME_FILTER", "false").lower() in ("1", "true", "yes", "on")
+            and bias.get("source", "") not in _MEAN_REVERSION_SRC):
+        import regime as _regime
+        _rg_tf = cfg.get("REGIME_TF", "H1")
+        _rg_df = mt5.rates(exsym, _rg_tf, 120)
+        _rg = _regime.classify(_rg_df,
+                               adx_min=float(cfg.get("REGIME_ADX_MIN", "20") or "20"),
+                               chop_max=float(cfg.get("REGIME_CHOP_MAX", "55") or "55"))
+        if _rg["regime"] == "range":
+            log.debug("ข้าม %s — ตลาด sideways (%s) [regime filter]", exsym, _rg["reason"])
+            return {"skipped": True, "exsym": exsym, "direction": direction,
+                    "reason": f"ตลาด sideways — {_rg['reason']} [regime]"}
+        if ((_rg["regime"] == "trend_up" and direction == "sell")
+                or (_rg["regime"] == "trend_down" and direction == "buy")):
+            log.debug("ข้าม %s — สวน market structure (%s) [regime filter]", exsym, _rg["reason"])
+            return {"skipped": True, "exsym": exsym, "direction": direction,
+                    "reason": f"สวน structure {_rg['structure']} — {_rg['reason']} [regime]"}
+
     # ── Anti-chase / closed-bar guard — ไม่ไล่ราคาที่วิ่งไปไกลแล้วในแท่งนี้ ──
     # แท่ง forming ขยับจาก open เกิน CHASE_ATR_MULT×ATR ในทิศเทรด = ไล่ของแพง → เด้งกลับง่าย
     if cfg.get("REQUIRE_BAR_CLOSE", "false").lower() in ("1", "true", "yes", "on") and atr > 0:
