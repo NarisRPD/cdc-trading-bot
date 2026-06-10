@@ -140,6 +140,12 @@ def sync(example_path: str = _EXAMPLE, config_path: str = _CONFIG,
 
 if __name__ == "__main__":
     import sys
+    # คอนโซล Windows ดีฟอลต์ cp1252/cp874 — พิมพ์ไทยแล้ว UnicodeEncodeError
+    # บังคับ stdout เป็น UTF-8 (Python ≥3.7) · ถ้าไม่ได้ก็แทนตัวที่พิมพ์ไม่ได้ด้วย ?
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _dry = "--dry" in sys.argv
     r = sync(dry=_dry)
