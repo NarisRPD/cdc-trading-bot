@@ -62,7 +62,8 @@ def signal(df: Optional[pd.DataFrame], *,
            edge_pct: float = 0.10,
            min_touches: int = 2,
            sl_atr: float = 0.3,
-           chop_min: float = 50.0) -> dict:
+           chop_min: float = 50.0,
+           max_width_atr: float = 6.0) -> dict:
     """ตรวจ setup mean reversion ที่ขอบกรอบ — คืน {detected, direction, sl, tp, ...}
     df ควรเป็น TF สั้น (M15) ≥ lookback+60 แท่ง · ใช้เฉพาะแท่งปิดแล้ว"""
     need = max(lookback + 2, 60)
@@ -84,11 +85,16 @@ def signal(df: Optional[pd.DataFrame], *,
     range_low = float(l.min())
     width = range_high - range_low
 
-    # ── 1. กรอบต้องกว้างพอหลังหักต้นทุน ──────────────────────────────
+    # ── 1. กรอบต้องกว้างพอหลังหักต้นทุน — แต่ไม่กว้างเกินจนไม่ใช่กรอบ ──
     width_atr = width / atr
     if width_atr < min_width_atr:
         return {"detected": False,
                 "reason": f"กรอบแคบ {width_atr:.1f}×ATR < {min_width_atr:.1f}"}
+    # กรอบกว้างเกิน = มักเป็น "เทรนด์แรง/ขาลงดิ่ง + เด้ง" ที่ถูกอ่านผิดเป็นกรอบ
+    # (เคสจริง: ETH กรอบ 9.9×ATR → ซื้อขอบล่าง = รับมีดตก แดงทันที)
+    if max_width_atr > 0 and width_atr > max_width_atr:
+        return {"detected": False,
+                "reason": f"กรอบกว้างเกิน {width_atr:.1f}×ATR > {max_width_atr:.1f} — น่าจะเทรนด์ ไม่ใช่ sideways"}
 
     # ── 2. ทั้งหน้าต่างต้องเป็น range จริง (Choppiness สูง = ราคาวนในกรอบ) ──
     chop = regime._choppiness(df, n=lookback)

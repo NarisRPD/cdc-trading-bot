@@ -465,6 +465,7 @@ def _scan_range_mr(cfg, broker: set) -> list:
             min_touches=int(cfg.get("RANGE_MR_MIN_TOUCHES", "2") or "2"),
             sl_atr=float(cfg.get("RANGE_MR_SL_ATR", "0.3") or "0.3"),
             chop_min=float(cfg.get("RANGE_MR_CHOP_MIN", "50") or "50"),
+            max_width_atr=float(cfg.get("RANGE_MR_MAX_WIDTH_ATR", "6.0") or "6.0"),
         )
         if not sig.get("detected"):
             continue
