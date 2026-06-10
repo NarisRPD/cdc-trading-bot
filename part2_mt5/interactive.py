@@ -1215,6 +1215,18 @@ def _acquire_lock() -> bool:
 
 
 def main():
+    # sync config.env ให้ตรงโครง config.example.env ก่อนโหลด — เติม key ใหม่จาก git อัตโนมัติ
+    # ค่าจริง/secret ของผู้ใช้คงไว้เสมอ · key ที่หายจาก example ย้ายไปท้ายไฟล์ (ไม่ลบเงียบ)
+    # มี backup config.env.bak_sync ทุกครั้งที่เขียน · พังตรงไหนก็ข้าม — ห้ามทำบอทล่ม
+    try:
+        import sync_config
+        _sc = sync_config.sync()
+        if _sc:
+            log.info("sync_config: เติมคีย์ใหม่ %d %s · คีย์นอก example %d %s",
+                     len(_sc["added"]), _sc["added"][:10],
+                     len(_sc["orphans"]), _sc["orphans"][:10])
+    except Exception as _se:  # noqa: BLE001
+        log.warning("sync_config ข้าม (ไม่กระทบบอท): %s", _se)
     cfg = load()
     if not _acquire_lock():
         log.warning("Part 2 มี instance รันอยู่แล้ว — ออก (กันรันซ้ำ)")
