@@ -176,6 +176,7 @@ _SRC_MAP = {
     "utbot":      "🤖 UT Bot",
     "hybrid":     "🔀 Hybrid-Pro",
     "scalp":      "⚡ EMA+Stoch",
+    "rsi2":       "📉 RSI-2 Pullback",
     "ema_m5":     "🎯 EMA Ribbon M5",
     "fx_orb":     "🌅 FX ORB",
     "pa":         "📐 Price Action",
@@ -432,6 +433,36 @@ def _scan_rvol_brk(cfg, broker: set) -> list:
                                "tag": f"RVOL Brk {tf} — {sig['reason']}"}}, None))
     if out:
         log.info("rvol_brk(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
+def _scan_rsi2(cfg, broker: set) -> list:
+    """RSI-2 Pullback (Larry Connors) — mean reversion ในทิศเทรนด์ใหญ่
+    EMA200 trend gate ในตัว → ยกเว้น MTF filter (ticket._OWN_TREND_SRC) และ
+    ไม่เข้า scalp filters (momentum confirm จะบล็อกการซื้อจังหวะย่อ — ขัดธรรมชาติกลยุทธ์)"""
+    import scalp as _sc
+    tf = cfg.get("RSI2_TF", "H1")
+    rr = float(cfg.get("RSI2_RR", "1.5") or "1.5")
+    out = []
+    for sym in _watchlist(cfg, broker):
+        df = m.rates(sym, tf, 260)
+        if df is None or len(df) < 215:
+            continue
+        sig = _sc.rsi2_signal(
+            df,
+            buy_below=float(cfg.get("RSI2_BUY", "10") or "10"),
+            sell_above=float(cfg.get("RSI2_SELL", "90") or "90"),
+            ema_period=int(cfg.get("RSI2_EMA", "200") or "200"),
+            sl_atr_mult=float(cfg.get("RSI2_SL_ATR", "2.0") or "2.0"),
+        )
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "zone": None, "rsi": None,
+                     "source": "rsi2",
+                     "scalp": {"sl": sig["sl"], "rr": rr,
+                               "tag": f"RSI-2 {tf} — {sig['reason']}"}}, None))
+    if out:
+        log.info("rsi2(%s): เจอ %d สัญญาณ", tf, len(out))
     return out
 
 
@@ -1255,6 +1286,7 @@ def main():
     use_orb_pro   = cfg.get("USE_ORB_PRO",   "false").lower() in ("1", "true", "yes", "on")  # ORB London/NY session
     use_range_mr  = cfg.get("USE_RANGE_MR",  "false").lower() in ("1", "true", "yes", "on")  # Range-edge mean reversion (ตลาด sideways)
     use_rvol_brk  = cfg.get("USE_RVOL_BRK",  "false").lower() in ("1", "true", "yes", "on")  # RVOL spurt + breakout (in-play momentum)
+    use_rsi2      = cfg.get("USE_RSI2",      "false").lower() in ("1", "true", "yes", "on")  # RSI-2 pullback (Connors — ย่อในเทรนด์)
     max_pos = int(cfg.get("MAX_OPEN_POSITIONS", "5"))
     notify_scan = cfg.get("NOTIFY_SCAN", "false").lower() in ("1", "true", "yes", "on")
     max_dd = float(cfg.get("MAX_DRAWDOWN_PCT", "0") or "0")        # เบรกขาดทุนสะสม (0=ปิด)
@@ -1581,6 +1613,9 @@ def main():
             # 2.5) จัดการ position ที่เปิดอยู่
             if execute_on:
                 manage.manage_positions(cfg, bal)
+                # Pairs Trading / Stat-Arb — จัดการแยกระบบ (magic 260606 · exit ด้วย z-score)
+                import pairs_arb
+                pairs_arb.tick(cfg, m, token, chat)
 
             # 2.6) journal ไม้ที่ปิด + รายงานทุกไม้ที่เพิ่งปิด + เรียนรู้ (ทุก ~60 วิ)
             if now - last_journal > 60:
@@ -1708,6 +1743,8 @@ def main():
                             queue += _scan_range_mr(cfg, syms)
                         if use_rvol_brk and auto_on:       # RVOL spurt + breakout (in-play momentum)
                             queue += _scan_rvol_brk(cfg, syms)
+                        if use_rsi2 and auto_on:           # RSI-2 pullback (Connors — ย่อในเทรนด์ใหญ่)
+                            queue += _scan_rsi2(cfg, syms)
                         if use_hybrid and auto_on:         # Hybrid-Pro H1+M15
                             queue += _scan_hybrid(cfg, syms)
                         if use_pa:                         # Price Action & Market Structure H1

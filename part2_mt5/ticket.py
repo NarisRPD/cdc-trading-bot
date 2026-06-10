@@ -36,6 +36,11 @@ def _atr(df, n: int = 14) -> float:
 # กลยุทธ์ "สวนเทรนด์โดยตั้งใจ" (mean-reversion) — ไม่บังคับ MTF align (ไม่งั้นตัดทิ้งหมด)
 _MEAN_REVERSION_SRC = {"vwap", "rsi_div", "range_mr"}
 
+# กลยุทธ์ที่มี "trend gate ของตัวเอง" แข็งแรงกว่า MTF — ยกเว้น MTF filter เสมอ
+# (rsi2: เข้าเฉพาะเหนือ/ใต้ EMA200 อยู่แล้ว · จังหวะเข้าคือ "ย่อ" ซึ่ง M30 มักสวนชั่วคราว
+#  ถ้าให้ MTF เช็คจะบล็อกหมด — ขัดธรรมชาติ buy-the-dip ของกลยุทธ์)
+_OWN_TREND_SRC = {"rsi2"}
+
 # กลยุทธ์ที่ยกเว้น regime filter: mean-rev (range คือ edge ของมัน) + rvol_brk
 # (RVOL spurt = หลักฐานว่า regime เพิ่งเปลี่ยน — ADX H1 เป็น lagging ตามไม่ทัน
 #  ถ้าไม่ยกเว้น breakout จาก consolidation จะโดนบล็อกว่า "range" ทุกครั้ง)
@@ -174,6 +179,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         "fx_orb":     "M5",
         "range_mr":   cfg.get("RANGE_MR_TF", "M15"),
         "rvol_brk":   cfg.get("RVOL_TF", "M15"),
+        "rsi2":       cfg.get("RSI2_TF", "H1"),
     }
     rsi_tf = _rsi_tf_map.get(bias.get("source", ""), entry_tf)   # fallback → entry_tf
     if rsi_tf.upper() != entry_tf.upper():
@@ -210,7 +216,8 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # ปกติยกเว้น mean-reversion (vwap/rsi_div) ที่สวนเทรนด์โดยตั้งใจ
     # แต่ MTF_INCLUDE_MEANREV=true → บังคับให้ mean-reversion เคารพ MTF ด้วย
     #   (เช่น crypto เทรนด์แรง — RSI div/VWAP สวนเทรนด์ = แดงตั้งแต่เข้า → เปิดออปชันนี้กัน)
-    if cfg.get("USE_MTF_FILTER", "false").lower() in ("1", "true", "yes", "on"):
+    if (cfg.get("USE_MTF_FILTER", "false").lower() in ("1", "true", "yes", "on")
+            and bias.get("source", "") not in _OWN_TREND_SRC):
         _include_mr = cfg.get("MTF_INCLUDE_MEANREV", "false").lower() in ("1", "true", "yes", "on")
         _is_mr = bias.get("source", "") in _MEAN_REVERSION_SRC
         if _include_mr or not _is_mr:

@@ -563,6 +563,48 @@ def ema_ribbon_signal(df, fast: int = 8, slow: int = 21,
     }
 
 
+def rsi2_signal(df, buy_below: float = 10.0, sell_above: float = 90.0,
+                ema_period: int = 200, sl_atr_mult: float = 2.0) -> dict:
+    """RSI-2 Pullback (Larry Connors) — mean reversion "ในทิศเทรนด์ใหญ่เท่านั้น"
+    สูตรคลาสสิกของ quant desk: backtest สาธารณะบนดัชนีย้อน 20+ ปี win rate ~70%
+
+      Buy : ราคา > EMA200 (เทรนด์ขึ้นยืนยันแล้ว) + RSI(2) < buy_below → ซื้อจังหวะย่อลึก
+      Sell: ราคา < EMA200 + RSI(2) > sell_above → ขายจังหวะเด้งแรง
+    *** ต่างจาก mean-rev ทั่วไป: มี EMA200 trend gate ในตัว — ไม่รับมีดตกสวนเทรนด์ ***
+
+    ใช้แท่งปิดแล้ว ([-2]) เท่านั้น — กันสัญญาณ repaint
+    SL = sl_atr_mult×ATR (กว้าง — RSI-2 ต้องให้ราคาหายใจ ออกด้วย mean-revert ไม่ใช่ SL)
+    คืน {detected, direction, entry, sl, rsi2, reason}"""
+    if df is None or len(df) < ema_period + 10:
+        return {"detected": False}
+    close = df["close"].astype(float)
+    # ตัดสินใจจากแท่งปิดล่าสุด ([-2]) — แท่ง forming ([-1]) repaint ได้
+    c = float(close.iloc[-2])
+    ema = float(close.ewm(span=ema_period, adjust=False).mean().iloc[-2])
+    atr = _atr(df.iloc[:-1])
+    if atr <= 0:
+        return {"detected": False}
+
+    # RSI(2) — Wilder smoothing บน series ที่ตัดแท่ง forming แล้ว
+    d = close.iloc[:-1].diff()
+    up = d.clip(lower=0).ewm(alpha=1 / 2, adjust=False).mean()
+    dn = (-d.clip(upper=0)).ewm(alpha=1 / 2, adjust=False).mean()
+    _dn = float(dn.iloc[-1])
+    rsi2 = 100.0 - 100.0 / (1.0 + float(up.iloc[-1]) / _dn) if _dn > 1e-12 else 100.0
+
+    if c > ema and rsi2 < buy_below:
+        sl = round(c - sl_atr_mult * atr, 5)
+        return {"detected": True, "direction": "buy", "entry": round(c, 5), "sl": sl,
+                "rsi2": round(rsi2, 1),
+                "reason": f"RSI-2 ย่อลึก {rsi2:.0f} ในขาขึ้น (เหนือ EMA{ema_period})"}
+    if c < ema and rsi2 > sell_above:
+        sl = round(c + sl_atr_mult * atr, 5)
+        return {"detected": True, "direction": "sell", "entry": round(c, 5), "sl": sl,
+                "rsi2": round(rsi2, 1),
+                "reason": f"RSI-2 เด้งแรง {rsi2:.0f} ในขาลง (ใต้ EMA{ema_period})"}
+    return {"detected": False}
+
+
 def vpoc(df, bin_atr_mult: float = 0.03) -> dict:
     """
     Volume Profile จาก OHLCV DataFrame → หา VPOC + Value Area (VAH/VAL)
