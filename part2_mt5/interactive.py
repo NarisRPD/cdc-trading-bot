@@ -386,6 +386,48 @@ def _scan_scalp(cfg, broker: set) -> list:
     return out
 
 
+def _scan_range_mr(cfg, broker: set) -> list:
+    """สแกน Range-Edge Mean Reversion — เข้าเฉพาะขอบกรอบ sideways ที่กว้างพอ
+    (เกราะอยู่ใน range_mr.signal: กรอบ ≥ N×ATR · ADX ต่ำ · แตะขอบซ้ำ · rejection)
+    SL/TP สัมบูรณ์ของกลยุทธ์ (SL นอกขอบ · TP กลางกรอบ) ส่งผ่าน bias.scalp
+    หมายเหตุ: source "range_mr" อยู่ใน _MEAN_REVERSION_SRC → regime filter ยกเว้นให้"""
+    import range_mr as _rmr
+    import pandas as pd
+    tf = cfg.get("RANGE_MR_TF", "M15")
+    lookback = int(cfg.get("RANGE_MR_BARS", "48") or "48")
+    out = []
+    for sym in _watchlist(cfg, broker):
+        if market_hours.category(sym) == "fx":           # FX ปิดผ่าน TRADE_FX อยู่แล้ว — ข้ามตั้งแต่สแกน
+            continue
+        df = m.rates(sym, tf, max(lookback + 80, 260))
+        if df is None or len(df) < lookback + 60 or "time" not in df.columns:
+            continue
+        try:                                             # ไม่มีแท่งใหม่ = ตลาดปิด → ข้าม
+            last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > 45:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        sig = _rmr.signal(
+            df,
+            lookback=lookback,
+            min_width_atr=float(cfg.get("RANGE_MR_MIN_WIDTH_ATR", "3.0") or "3.0"),
+            edge_pct=float(cfg.get("RANGE_MR_EDGE_PCT", "0.10") or "0.10"),
+            min_touches=int(cfg.get("RANGE_MR_MIN_TOUCHES", "2") or "2"),
+            sl_atr=float(cfg.get("RANGE_MR_SL_ATR", "0.3") or "0.3"),
+            chop_min=float(cfg.get("RANGE_MR_CHOP_MIN", "50") or "50"),
+        )
+        if not sig.get("detected"):
+            continue
+        out.append(({"symbol": sym, "direction": sig["direction"], "zone": None, "rsi": None,
+                     "source": "range_mr",
+                     "scalp": {"sl": sig["sl"], "tp": sig["tp"],
+                               "tag": f"Range MR {tf} — {sig['reason']}"}}, None))
+    if out:
+        log.info("range_mr(%s): เจอ %d สัญญาณ", tf, len(out))
+    return out
+
+
 def _scan_fx_orb(cfg, broker: set) -> list:
     """สแกน Asian-London ORB เฉพาะคู่เงิน (รันเฉพาะหน้าต่าง London 07-11 UTC) → [(bias, None)]
     TP/SL สัมบูรณ์ของกลยุทธ์ (TP=ความกว้างกรอบ · SL=กึ่งกลาง) ส่งผ่าน bias.scalp"""
@@ -1143,6 +1185,7 @@ def main():
     use_bb_squeeze= cfg.get("USE_BB_SQUEEZE","false").lower() in ("1", "true", "yes", "on")  # BB Squeeze Breakout M5
     use_rsi_div   = cfg.get("USE_RSI_DIV",   "false").lower() in ("1", "true", "yes", "on")  # RSI Divergence M5
     use_orb_pro   = cfg.get("USE_ORB_PRO",   "false").lower() in ("1", "true", "yes", "on")  # ORB London/NY session
+    use_range_mr  = cfg.get("USE_RANGE_MR",  "false").lower() in ("1", "true", "yes", "on")  # Range-edge mean reversion (ตลาด sideways)
     max_pos = int(cfg.get("MAX_OPEN_POSITIONS", "5"))
     notify_scan = cfg.get("NOTIFY_SCAN", "false").lower() in ("1", "true", "yes", "on")
     max_dd = float(cfg.get("MAX_DRAWDOWN_PCT", "0") or "0")        # เบรกขาดทุนสะสม (0=ปิด)
@@ -1588,6 +1631,8 @@ def main():
                             queue += _scan_ema_m5(cfg, syms)
                         if use_fx_orb and auto_on:         # FX ORB London
                             queue += _scan_fx_orb(cfg, syms)
+                        if use_range_mr and auto_on:       # Range-edge mean reversion (ตลาด sideways)
+                            queue += _scan_range_mr(cfg, syms)
                         if use_hybrid and auto_on:         # Hybrid-Pro H1+M15
                             queue += _scan_hybrid(cfg, syms)
                         if use_pa:                         # Price Action & Market Structure H1

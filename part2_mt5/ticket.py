@@ -34,7 +34,7 @@ def _atr(df, n: int = 14) -> float:
 
 
 # กลยุทธ์ "สวนเทรนด์โดยตั้งใจ" (mean-reversion) — ไม่บังคับ MTF align (ไม่งั้นตัดทิ้งหมด)
-_MEAN_REVERSION_SRC = {"vwap", "rsi_div"}
+_MEAN_REVERSION_SRC = {"vwap", "rsi_div", "range_mr"}
 
 # กลยุทธ์ scalp/สั้น ที่ Pro Scalping Filters เหมาะ (Kill Zone/Liquidity/Momentum/VWAP)
 # ไม่รวม trend H1 (supertrend/halftrend/pa) เพราะ Kill Zone จะบล็อกนอก session ผิดเจตนา
@@ -152,6 +152,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         "rsi_div":    "M5",
         "orb_pro":    "M5",
         "fx_orb":     "M5",
+        "range_mr":   cfg.get("RANGE_MR_TF", "M15"),
     }
     rsi_tf = _rsi_tf_map.get(bias.get("source", ""), entry_tf)   # fallback → entry_tf
     if rsi_tf.upper() != entry_tf.upper():
