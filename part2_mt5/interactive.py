@@ -1577,9 +1577,11 @@ def main():
                     for d in journal.record_closed():
                         emo = "✅" if d["profit"] >= 0 else "❌"
                         dir_th = "🟢 Buy" if d.get("direction") == "buy" else "🔴 Sell"
-                        # เหตุผลปิด: TP / SL / Bot ปิดเอง / Manual
+                        # เหตุผลปิด: TP / SL / Bot ปิดเอง / Manual / Stop Out
+                        # ไม่รู้จริง ("") → ไม่โชว์ป้าย (ดีกว่าเดาผิดแล้วทำคนสับสน)
                         _reason_map = {"tp": "🎯 TP", "sl": "🛑 SL",
-                                       "bot": "🤖 Bot", "manual": "✋ Manual"}
+                                       "bot": "🤖 Bot", "manual": "✋ Manual",
+                                       "so": "💥 Stop Out"}
                         reason_str = _reason_map.get(d.get("close_reason", ""), "")
                         reason_line = f" · {reason_str}" if reason_str else ""
                         pct = (f" = {d['profit'] / bal * 100:+.2f}% ของทุน ${bal:,.0f}"

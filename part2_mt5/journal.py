@@ -50,8 +50,8 @@ def record_closed(days_back: int = 7) -> list:
     if not deals:
         return []
 
-    # โหลด order history ครั้งเดียว → dict {ticket: order} สำหรับ lookup เหตุผลปิดไม้
-    # (ดีกว่า call API ซ้ำทุก deal)
+    # โหลด order history ครั้งเดียว → dict {ticket: order} — ใช้เป็น fallback
+    # เมื่อ deal.reason อ่านไม่ได้เท่านั้น (ปกติอ่านจาก deal โดยตรง)
     _ord_map: dict = {}
     try:
         _all_ords = m5.history_orders_get(
@@ -59,7 +59,7 @@ def record_closed(days_back: int = 7) -> list:
         ) or []
         _ord_map = {o.ticket: o for o in _all_ords}
     except Exception:   # noqa: BLE001
-        pass            # ไม่มี order history → close_reason จะเป็น "manual" ทุกตัว
+        pass            # ไม่มี order history → fallback ใช้ไม่ได้ (close_reason อาจว่าง)
 
     new = []
     for d in deals:
@@ -71,14 +71,17 @@ def record_closed(days_back: int = 7) -> list:
         #   DEAL_TYPE_BUY  (0) = ซื้อเพื่อปิด → position เดิมเป็น Sell
         direction = "buy" if d.type == m5.DEAL_TYPE_SELL else "sell"
 
-        # เหตุผลปิด: ดูจาก ORDER ที่ trigger deal นี้ (d.order = ticket ของ order นั้น)
-        # ORDER_REASON_TP=5, ORDER_REASON_SL=4, ORDER_REASON_EXPERT=3
-        close_reason = "manual"
-        _o = _ord_map.get(d.order)
-        if _o is not None:
-            if _o.reason == 5:   close_reason = "tp"     # TP hit
-            elif _o.reason == 4: close_reason = "sl"     # SL hit
-            elif _o.reason == 3: close_reason = "bot"    # EA/Script (manage.py ปิดเอง)
+        # เหตุผลปิด: อ่านจาก deal.reason โดยตรง (แม่นสุด — ติดมากับ deal ไม่ต้อง lookup)
+        # DEAL_REASON_*: 0=client(มือ/desktop) 1=mobile 2=web 3=expert(บอท) 4=SL 5=TP 6=stop-out
+        # *** ห้าม default เป็น "manual" — เคยติดป้าย Manual ทั้งที่จริงชน SL (lookup order พลาด)
+        #     ทำให้ผู้ใช้สับสนว่าใครปิด · ไม่รู้จริง → เว้นว่างดีกว่าเดาผิด ***
+        _REASON_MAP = {5: "tp", 4: "sl", 3: "bot", 0: "manual", 1: "manual", 2: "manual", 6: "so"}
+        close_reason = _REASON_MAP.get(getattr(d, "reason", None), "")
+        if not close_reason:
+            # fallback: deal.reason ใช้ไม่ได้ (โบรก/เวอร์ชันเก่า) → ดูจาก order ที่ trigger deal
+            _o = _ord_map.get(d.order)
+            if _o is not None:
+                close_reason = _REASON_MAP.get(getattr(_o, "reason", None), "")
 
         entry = {"deal_id": d.ticket, "symbol": d.symbol, "time": d.time,
                  "profit": round(d.profit + d.commission + d.swap, 2), "volume": d.volume,
