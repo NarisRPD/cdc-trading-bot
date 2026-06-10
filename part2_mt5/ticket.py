@@ -164,7 +164,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         # M15 strategies
         "utbot":      cfg.get("UTB_TF",   "M15"),
         "hybrid":     "M15",
-        "scalp":      entry_tf,   # EMA+Stoch ใช้ entry_tf (M15 ตามค่าตั้งต้น)
+        "scalp":      cfg.get("SCALP_TF", entry_tf),   # EMA+Stoch ใช้ SCALP_TF (fallback entry_tf)
         # M5 scalp suite — ตรวจ RSI บน M5 เหมือน TF ที่ scanner ใช้
         "ema_m5":     cfg.get("EMA_M5_TF", "M5"),
         "vwap":       "M5",

@@ -351,11 +351,13 @@ def _scan_utbot(cfg, broker: set) -> list:
 
 
 def _scan_scalp(cfg, broker: set) -> list:
-    """สแกน EMA+Stoch บน M15 (เฉพาะของผันผวน เลี่ยง FX ตามผล backtest) → [(bias, None)]
+    """สแกน EMA+Stoch บน SCALP_TF (default M15 · เฉพาะของผันผวน เลี่ยง FX ตามผล backtest)
     เติมจังหวะ 'ตามเทรนด์' ระหว่างรอสัญญาณหลัก — ยังต้องผ่านเกราะ build_ticket ทุกด่าน
-    bias.scalp = {sl, rr, tag} → build_ticket ใช้ SL/TP ของกลยุทธ์เอง (ปิดไว ไม่โดนกฎ +2%)"""
+    bias.scalp = {sl, rr, tag} → build_ticket ใช้ SL/TP ของกลยุทธ์เอง (ปิดไว ไม่โดนกฎ +2%)
+    ⚠️ TF ต่ำลง = ระยะ TP หดตาม √เวลา แต่ spread คงที่ → ดู R:R หลังหักต้นทุนใน log"""
     import scalp as _scalp
     import pandas as pd
+    tf = cfg.get("SCALP_TF", "M15")
     rr = float(cfg.get("SCALP_RR", "1.8"))
     wk = (datetime.now(timezone.utc).weekday() >= 5 and
           cfg.get("SCALP_WEEKEND_LOOSEN", "true").lower() in ("1", "true", "yes", "on"))
@@ -364,13 +366,14 @@ def _scan_scalp(cfg, broker: set) -> list:
     for sym in _watchlist(cfg, broker):
         if market_hours.category(sym) == "fx":          # FX ขาดทุนใน backtest → เลี่ยง
             continue
-        df = m.rates(sym, "M15", 260)
+        df = m.rates(sym, tf, 260)
         if df is None or len(df) < 210 or "time" not in df.columns:
             continue
-        try:                                             # ไม่มีแท่ง M15 ใหม่ = ตลาดปิด → ข้าม
+        try:                                             # ไม่มีแท่งใหม่ = ตลาดปิด → ข้าม
             # แปลง last_t ให้เป็น aware datetime (UTC) เพื่อเทียบกับ now(timezone.utc) ได้ถูกต้อง
             last_t = pd.to_datetime(df["time"].iloc[-1]).to_pydatetime().replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > 45:
+            _stale = 20 if tf.upper() in ("M1", "M5") else 45   # TF เร็ว สัญญาณบูดเร็ว
+            if (datetime.now(timezone.utc) - last_t).total_seconds() / 60.0 > _stale:
                 continue
         except Exception:  # noqa: BLE001
             pass
@@ -380,9 +383,9 @@ def _scan_scalp(cfg, broker: set) -> list:
             continue
         out.append(({"symbol": sym, "direction": sig["direction"], "zone": None, "rsi": None,
                      "source": "scalp",
-                     "scalp": {"sl": sig["sl"], "rr": rr, "tag": "EMA+Stoch M15"}}, None))
+                     "scalp": {"sl": sig["sl"], "rr": rr, "tag": f"EMA+Stoch {tf}"}}, None))
     if out:
-        log.info("scalp(EMA+Stoch M15): เจอ %d สัญญาณ", len(out))
+        log.info("scalp(EMA+Stoch %s): เจอ %d สัญญาณ", tf, len(out))
     return out
 
 
@@ -396,7 +399,10 @@ def _scan_rvol_brk(cfg, broker: set) -> list:
     tf = cfg.get("RVOL_TF", "M15")
     rr = float(cfg.get("RVOL_RR", "1.8"))
     baseline_days = int(cfg.get("RVOL_BASELINE_DAYS", "5") or "5")
-    bars_need = max(96 * (baseline_days + 1), 500)   # M15: 96 แท่ง/วัน × (baseline+วันนี้)
+    # แท่ง/วัน ตาม TF — ใช้คำนวณจำนวนแท่งที่ต้องดึงให้ครอบ baseline ครบทุกวัน
+    _bars_per_day = {"M1": 1440, "M5": 288, "M15": 96, "M30": 48, "H1": 24}
+    bpd = _bars_per_day.get(tf.upper(), 96)
+    bars_need = max(bpd * (baseline_days + 1), 500)
     out = []
     for sym in _watchlist(cfg, broker):
         if market_hours.category(sym) == "fx":           # นโยบายเดียวกับ scanner อื่น
