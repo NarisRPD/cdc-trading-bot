@@ -88,7 +88,12 @@ def _build(example_path: str, user_values: dict, user_commented: list) -> "tuple
             else:
                 val = ex_val                # key ใหม่ → ใช้ default ของ example
                 added.append(key)
-            out.append(f"{key}={val}" + (f"   {comment}" if comment else ""))
+            kv = f"{key}={val}"
+            if comment:
+                # จัด comment ให้ตรงคอลัมน์ (อ่านง่ายเหมือน example) — บรรทัดยาวเกินก็เว้น 3 ช่อง
+                out.append(kv.ljust(30) + "   " + comment if len(kv) <= 30 else kv + "   " + comment)
+            else:
+                out.append(kv)
 
     # key ของผู้ใช้ที่ไม่อยู่ใน example — เก็บไว้ใช้งานต่อใน section ท้าย (ไม่ลบเงียบ)
     orphans = [k for k in user_values if k not in seen]
@@ -103,7 +108,8 @@ def _build(example_path: str, user_values: dict, user_commented: list) -> "tuple
         out += ["", _KEEP_HEADER]
         out += keep
 
-    return "\n".join(out) + "\n", {"added": added, "orphans": orphans}
+    # CRLF — ไฟล์ฝั่ง Windows ทั้งคู่ (VPS+local) · LF ล้วนทำ Notepad รุ่นเก่าเห็นเป็นบรรทัดเดียว
+    return "\r\n".join(out) + "\r\n", {"added": added, "orphans": orphans}
 
 
 def sync(example_path: str = _EXAMPLE, config_path: str = _CONFIG,
@@ -120,7 +126,8 @@ def sync(example_path: str = _EXAMPLE, config_path: str = _CONFIG,
 
     old_text = ""
     if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as f:
+        # newline="" = อ่าน raw ไม่แปลง line ending — เทียบ byte-แม่นยำกับ new_text
+        with open(config_path, "r", encoding="utf-8", newline="") as f:
             old_text = f.read()
     if new_text == old_text:
         return None                          # เหมือนเดิมทุกตัวอักษร → no-op
@@ -132,7 +139,8 @@ def sync(example_path: str = _EXAMPLE, config_path: str = _CONFIG,
     if os.path.exists(config_path):
         shutil.copy2(config_path, config_path + ".bak_sync")
     tmp = config_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    # newline="" = ห้าม Python แปลง \n เพิ่ม — ไม่งั้น \r\n ของเรากลายเป็น \r\r\n (บรรทัดว่างแทรก)
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(new_text)
     os.replace(tmp, config_path)
     return summary
