@@ -304,6 +304,7 @@ def _scan_utbot(cfg, broker: set) -> list:
     rr = float(cfg.get("UTB_RR", "1.8"))
     stale_min = 45
     out = []
+    h1_conflicts = 0       # นับตัวที่ M15 ขัด H1 — log สรุปบรรทัดเดียวแทนรายตัว
     for sym in _watchlist(cfg, broker):
         if market_hours.category(sym) == "fx":   # FX ขาดทุนใน backtest → เลี่ยง
             continue
@@ -335,16 +336,17 @@ def _scan_utbot(cfg, broker: set) -> list:
                 if _h1_st.get("direction") is not None:
                     _h1_dir = "buy" if int(_h1_st["direction"][-1]) == 1 else "sell"
                     if _h1_dir != sig["direction"]:
-                        log.info("ข้าม %s — UT Bot(%s) %s ขัด H1 SuperTrend (%s)",
-                                 sym, tf, sig["direction"], _h1_dir)
+                        log.debug("ข้าม %s — UT Bot(%s) %s ขัด H1 SuperTrend (%s)",
+                                  sym, tf, sig["direction"], _h1_dir)
+                        h1_conflicts += 1
                         continue
 
         out.append(({"symbol": sym, "direction": sig["direction"], "source": "utbot",
                      "st_value": sig.get("ts_value"), "rsi": None,
                      "scalp": {"sl": sig["sl"], "rr": rr,
                                "tag": f"UT Bot {tf} (kv={kv})"}}, None))
-    if out:
-        log.info("utbot(%s): เจอ %d สัญญาณ", tf, len(out))
+    if out or h1_conflicts:
+        log.info("utbot(%s): เจอ %d สัญญาณ · ข้าม %d ขัด H1 SuperTrend", tf, len(out), h1_conflicts)
     return out
 
 

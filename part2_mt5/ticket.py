@@ -95,6 +95,15 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
                 "reason": f"ช่วงเปิด/ปิดตลาด US (volatile window {_open_skip}/{_close_skip}min)"}
 
+    # ห้ามเปิดไม้ใหม่เมื่อตลาดใกล้ปิด — runway สั้นเกิน trailing ไม่ทันทำงาน
+    # แล้วโดน CLOSE_BEFORE_MARKET_CLOSE (buffer 20 นาที) บังคับปิดทันที → ต้องตั้งค่านี้ > 20
+    # crypto คืน False เสมอ (24 ชม.) · FX/commodity โดนเฉพาะก่อนปิดสุดสัปดาห์
+    _no_entry_min = int(cfg.get("NO_ENTRY_BEFORE_CLOSE_MIN", "30") or "30")
+    if _no_entry_min > 0 and market_hours.closing_soon(exsym, _no_entry_min):
+        log.debug("ข้าม %s — เหลือ <%d นาทีก่อนตลาดปิด ไม่เปิดไม้ใหม่", exsym, _no_entry_min)
+        return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                "reason": f"ใกล้ตลาดปิด (<{_no_entry_min} นาที) — ไม่เปิดไม้ใหม่"}
+
     # Auto-disable เทคนิคที่แพ้: กลยุทธ์/symbol ที่ win-rate ต่ำกว่าเกณฑ์ในข้อมูลจริง → ข้ามเงียบ
     # (ใช้ผลเทรดจริงนำ — block เฉพาะตัวที่มีหลักฐานแพ้ชัด · ดู learn.should_skip)
     _skip, _skip_reason = learn.should_skip(bias.get("source", ""), exsym, cfg)
@@ -187,7 +196,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
             _htf = _higher_tf_trend(exsym, _mtf_tf, mt5)
             if (direction == "buy" and _htf == "down") or (direction == "sell" and _htf == "up"):
                 _mr_tag = " (รวม mean-rev)" if _is_mr else ""
-                log.info("ข้าม %s — สวนเทรนด์ %s (%s) [MTF filter%s]", exsym, _mtf_tf, _htf, _mr_tag)
+                log.debug("ข้าม %s — สวนเทรนด์ %s (%s) [MTF filter%s]", exsym, _mtf_tf, _htf, _mr_tag)
                 return {"skipped": True, "exsym": exsym, "direction": direction,
                         "reason": f"สวนเทรนด์ {_mtf_tf} ({_htf}) — MTF filter"}
 
@@ -198,7 +207,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         _bar_open = float(df["open"].iloc[-1])
         _moved = (spot - _bar_open) if direction == "buy" else (_bar_open - spot)
         if _moved > _chase * atr:
-            log.info("ข้าม %s — ไล่ราคา (แท่งวิ่ง %.1f×ATR > %.1f) [anti-chase]", exsym, _moved / atr, _chase)
+            log.debug("ข้าม %s — ไล่ราคา (แท่งวิ่ง %.1f×ATR > %.1f) [anti-chase]", exsym, _moved / atr, _chase)
             return {"skipped": True, "exsym": exsym, "direction": direction,
                     "reason": f"ไล่ราคา (แท่งวิ่ง {_moved / atr:.1f}×ATR เกิน {_chase})"}
 
@@ -210,10 +219,11 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         _sf_tf = cfg.get("SCALP_FILTER_TF", "M5")
         _sf_df = mt5.rates(exsym, _sf_tf, int(cfg.get("SCALP_FILTER_BARS", "300") or "300"))
         if _sf_df is not None and len(_sf_df) >= 30:
-            _sf = scalp_filters.check_all_filters(_sf_df, direction, cfg, symbol=exsym, atr=atr)
+            _sf = scalp_filters.check_all_filters(_sf_df, direction, cfg, symbol=exsym,
+                                                  category=_sym_cat, atr=atr)
             if not _sf.get("pass"):
-                log.info("ข้าม %s — %s [scalp filters %d/%d]", exsym, _sf.get("reason", ""),
-                         _sf.get("score", 0), _sf.get("max_score", 0))
+                log.debug("ข้าม %s — %s [scalp filters %d/%d]", exsym, _sf.get("reason", ""),
+                          _sf.get("score", 0), _sf.get("max_score", 0))
                 return {"skipped": True, "exsym": exsym, "direction": direction,
                         "reason": _sf.get("reason", "ไม่ผ่าน scalp filters")}
 
@@ -351,7 +361,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     else:
         max_spread = float(cfg.get("MAX_SPREAD_PCT", "0.15"))            # FX เท่านั้น (spread แคบ ~0.01-0.05%)
     if spread_pct > max_spread:
-        log.info("ข้าม %s — spread กว้าง %.3f%% > %.2f%% (%s)", exsym, spread_pct, max_spread, _sym_cat)
+        log.debug("ข้าม %s — spread กว้าง %.3f%% > %.2f%% (%s)", exsym, spread_pct, max_spread, _sym_cat)
         return {"skipped": True, "exsym": exsym, "direction": direction,
                 "reason": f"spread {spread_pct:.2f}% > {max_spread}%"}
     # หัก spread + ค่าคอม (ต่อรอบ) ออกจาก R:R → R:R สมจริง
@@ -365,7 +375,7 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     else:
         min_rr = float(cfg.get("MIN_RR", "1.5"))
     if rr_eff < min_rr:
-        log.info("ข้าม %s — R:R หลังหักต้นทุน 1:%.2f < ขั้นต่ำ 1:%.1f (%s)", exsym, rr_eff, min_rr, _source or "default")
+        log.debug("ข้าม %s — R:R หลังหักต้นทุน 1:%.2f < ขั้นต่ำ 1:%.1f (%s)", exsym, rr_eff, min_rr, _source or "default")
         return {"skipped": True, "exsym": exsym, "direction": direction,
                 "reason": f"R:R(หักต้นทุน) 1:{rr_eff:.2f} < 1:{min_rr:.1f}"}
     rr_val = round(rr_eff, 2)          # R:R ที่หักต้นทุน spread/คอมแล้ว (ใช้แสดง+เรียนรู้)
@@ -432,8 +442,8 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # (เคสพอร์ตเล็ก + SL กว้าง เช่นทองบนพอร์ต $500 → lot ขั้นต่ำเสี่ยงทะลุเป้า)
     max_risk_pct = float(cfg.get("MAX_RISK_PCT", "2.0"))
     if sizing and sizing.get("actual_pct") is not None and sizing["actual_pct"] > max_risk_pct:
-        log.info("ข้าม %s — เสี่ยงจริง %.1f%% เกินเพดาน %.1f%% (พอร์ตเล็ก/SL กว้างไปสำหรับตัวนี้)",
-                 exsym, sizing["actual_pct"], max_risk_pct)
+        log.debug("ข้าม %s — เสี่ยงจริง %.1f%% เกินเพดาน %.1f%% (พอร์ตเล็ก/SL กว้างไปสำหรับตัวนี้)",
+                  exsym, sizing["actual_pct"], max_risk_pct)
         return {"skipped": True, "exsym": exsym, "direction": direction,
                 "reason": f"เสี่ยง {sizing['actual_pct']:.1f}% เกินเพดาน {max_risk_pct:.0f}%"}
 

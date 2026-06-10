@@ -38,6 +38,9 @@ _KILL_ZONES = {
     "london_open":    (7,  0, 9,  0),   # London Open Kill Zone
     "ny_open":        (13, 0, 15, 30),  # New York Open Kill Zone
     "london_close":   (15, 0, 16, 0),  # London Close (volatile)
+    # ทางสายกลาง: ครอบ US session ทั้งวัน (ยกเว้นชั่วโมงท้ายที่ติดกฎห้ามเปิดใกล้ปิดอยู่แล้ว)
+    # ใช้แทนการปิด kill zone ทั้งหมด — ได้หน้าต่างหุ้น US เต็มโดยยังมีโครงสร้างเวลา
+    "ny_session":     (13, 0, 19, 30),  # NY full session (13:00-19:30 UTC = 20:00-02:30 ไทย)
 }
 
 _DEAD_ZONES = [
@@ -68,6 +71,7 @@ def in_kill_zone(now: Optional[datetime] = None,
                 "london_open":  "London Open (07-09 UTC)",
                 "ny_open":      "NY Open (13-15:30 UTC)",
                 "london_close": "London Close (15-16 UTC)",
+                "ny_session":   "NY Session (13-19:30 UTC)",
             }.get(name, name)
             return True, label
 
@@ -390,12 +394,16 @@ def check_all_filters(
     cfg: dict,
     *,
     symbol: str = "",
+    category: str = "",
     now: Optional[datetime] = None,
     atr: Optional[float] = None,
 ) -> dict:
     """
     รัน Pro Scalping Filters ทั้งหมด
     คืน {pass, score, max_score, filters, reason, details}
+
+    category="crypto" → ยกเว้น Kill Zone + Dead Zone (สินทรัพย์ 24 ชม.
+    ไม่มี London/NY session — เหลือ Liquidity/Momentum/VWAP ตรวจตามปกติ)
 
     cfg keys (ทั้งหมดมี default — ไม่ต้องตั้งก็ใช้ได้):
       SCALP_FILTER_KILL_ZONE=true      เข้าเฉพาะ London/NY Kill Zone
@@ -431,6 +439,11 @@ def check_all_filters(
 
     use_kz       = _bool("SCALP_FILTER_KILL_ZONE",  True)
     use_dz       = _bool("SCALP_FILTER_DEAD_ZONE",  True)
+    # crypto เทรด 24 ชม. — Kill Zone/Dead Zone เป็นแนวคิด session ของ FX/หุ้น
+    # เอามาครอบ crypto = บล็อกสัญญาณทั้งคืนโดยไม่มีเหตุผลทางตลาด
+    if category == "crypto":
+        use_kz = False
+        use_dz = False
     use_liq      = _bool("SCALP_FILTER_LIQ_SWEEP",  True)
     liq_required = _bool("SCALP_FILTER_LIQ_REQUIRED", False)  # false = bonus เท่านั้น
     use_mom      = _bool("SCALP_FILTER_MOMENTUM",   True)
@@ -521,9 +534,9 @@ def check_all_filters(
     else:
         reason = f"✅ Pro filters passed: {score}/{max_score}"
 
-    # log รายละเอียดถ้าไม่ผ่าน
+    # log รายละเอียดถ้าไม่ผ่าน — DEBUG พอ (สรุปรวมอยู่ในบรรทัด "scan:" ของ interactive)
     if not passed and symbol:
-        log.info("Scalp filter FAIL %s %s — %s", symbol, direction, reason)
+        log.debug("Scalp filter FAIL %s %s — %s", symbol, direction, reason)
 
     return {
         "pass": passed,
