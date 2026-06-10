@@ -48,8 +48,17 @@ _REGIME_EXEMPT_SRC = _MEAN_REVERSION_SRC | {"rvol_brk"}
 
 # กลยุทธ์ scalp/สั้น ที่ Pro Scalping Filters เหมาะ (Kill Zone/Liquidity/Momentum/VWAP)
 # ไม่รวม trend H1 (supertrend/halftrend/pa) เพราะ Kill Zone จะบล็อกนอก session ผิดเจตนา
-_SCALP_FILTER_SRC = {"vwap", "rsi_div", "bb_squeeze", "ema_m5", "orb_pro",
-                     "fx_orb", "scalp", "utbot", "hybrid"}
+# ไม่รวม orb_pro/fx_orb — กลยุทธ์เล่น "ช่วงเปิด session" โดยเฉพาะ ซึ่งตอนนั้น
+#   ราคาติด VWAP (เพิ่งรีเซ็ตวัน) + ADX ยัง lag → Pro filters บล็อก 100% ทั้งที่มี
+#   เกราะของตัวเองครบ (ความกว้างกรอบ vs ATR · กัน late entry · จำกัดหน้าต่างเวลา)
+_SCALP_FILTER_SRC = {"vwap", "rsi_div", "bb_squeeze", "ema_m5",
+                     "scalp", "utbot", "hybrid"}
+
+# กลยุทธ์ที่ Momentum confirm "ขัดธรรมชาติ" — ปิดเฉพาะ sub-filter นั้นให้ (ตัวอื่นยังตรวจ)
+#   mean-reversion (rsi_div/vwap/range_mr): เข้าสวนโมเมนตัมล่าสุดโดยนิยาม
+#   bb_squeeze: squeeze เกิดจาก ADX ต่ำโดยนิยาม → เกณฑ์ ADX≥20 = ไม่มีวันผ่าน
+# (หลักฐาน 10 มิ.ย.: "Momentum อ่อน" 156 ครั้ง/400 บรรทัด — กลยุทธ์พวกนี้ไม่เคยผ่านเลย)
+_MOMENTUM_EXEMPT = _MEAN_REVERSION_SRC | {"bb_squeeze"}
 
 
 def _higher_tf_trend(exsym: str, mtf_tf: str, mt5) -> str:
@@ -270,7 +279,11 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         _sf_tf = cfg.get("SCALP_FILTER_TF", "M5")
         _sf_df = mt5.rates(exsym, _sf_tf, int(cfg.get("SCALP_FILTER_BARS", "300") or "300"))
         if _sf_df is not None and len(_sf_df) >= 30:
-            _sf = scalp_filters.check_all_filters(_sf_df, direction, cfg, symbol=exsym,
+            _sf_cfg = cfg
+            if bias.get("source", "") in _MOMENTUM_EXEMPT:
+                # ปิดเฉพาะ Momentum confirm ให้กลยุทธ์ที่มันขัดธรรมชาติ — filter อื่นยังตรวจปกติ
+                _sf_cfg = {**cfg, "SCALP_FILTER_MOMENTUM": "false"}
+            _sf = scalp_filters.check_all_filters(_sf_df, direction, _sf_cfg, symbol=exsym,
                                                   category=_sym_cat, atr=atr)
             if not _sf.get("pass"):
                 log.debug("ข้าม %s — %s [scalp filters %d/%d]", exsym, _sf.get("reason", ""),
