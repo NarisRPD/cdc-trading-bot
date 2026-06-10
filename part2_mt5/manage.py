@@ -176,6 +176,24 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
                         _state.pop(p.ticket, None)
             poss = m5.positions_get() or ()
 
+    # 0b) FX Session Mode — ปิดไม้ FX ทั้งหมดเมื่อเข้าช่วงตลาด US (รวม buffer ก่อนเปิด)
+    # ⚠️ ข้อยกเว้นกฎ "ขาดทุนไม่ปิด" โดยคำสั่งผู้ใช้ชัดเจน (10 มิ.ย. 2026):
+    # FX เล่นเฉพาะนอกเวลาตลาด US และต้อง flat ก่อน US เปิด — กำไร/ขาดทุนปิดหมด
+    # ไม่ถือข้าม volatility ช่วง US · เช็คตลอดช่วง US (idempotent — เก็บไม้ตกค้างด้วย)
+    if cfg.get("FX_SESSION_MODE", "false").lower() in ("1", "true", "yes", "on"):
+        import market_hours
+        _fx_buf = int(cfg.get("FX_FLATTEN_BEFORE_US_MIN", "30") or "30")
+        if market_hours.in_us_session(_fx_buf):
+            fx_open = [p for p in poss
+                       if p.magic == _MAGIC and market_hours.category(p.symbol) == "fx"]
+            for p in fx_open:
+                if execute.close_position(p).get("ok"):
+                    log.info("🕗 ตลาด US ใกล้เปิด/เปิดอยู่ → flat FX %s (ไม้ $%.2f · กฎ FX session)",
+                             p.symbol, p.profit)
+                    _state.pop(p.ticket, None)
+            if fx_open:
+                poss = m5.positions_get() or ()
+
     alive = set()
     for p in poss:
         if p.magic != _MAGIC:

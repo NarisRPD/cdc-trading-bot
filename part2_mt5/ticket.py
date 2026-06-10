@@ -75,6 +75,18 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
                 "reason": "ปิดเทรด FX (TRADE_FX=false)"}
 
+    # FX Session Mode — เทรด FX เฉพาะ "นอกเวลาตลาด US" (Asian/London)
+    # ช่วง US เปิด volatility ข้ามตลาดสูง FX โดนลาก → หยุดเปิดไม้ใหม่ตั้งแต่
+    # FX_FLATTEN_BEFORE_US_MIN นาทีก่อน US เปิด (ไม้ที่ถืออยู่ manage.py ปิดให้หมด)
+    # หลัง US ปิด (03:00 ไทย) กลับมาเทรดได้อัตโนมัติ
+    if (_sym_cat == "fx"
+            and cfg.get("FX_SESSION_MODE", "false").lower() in ("1", "true", "yes", "on")):
+        _fx_buf = int(cfg.get("FX_FLATTEN_BEFORE_US_MIN", "30") or "30")
+        if market_hours.in_us_session(_fx_buf):
+            log.debug("ข้าม %s — FX หยุดช่วงตลาด US (รวม buffer %d นาที)", exsym, _fx_buf)
+            return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                    "reason": "FX หยุดช่วงตลาด US — กลับมาเทรดหลัง 03:00 ไทย"}
+
     # ปิดดัชนีที่ไม่ใช่ US ถ้า TRADE_INDEX=false — ยกเว้น allowlist (ดีฟอลต์ ญี่ปุ่น JP225 + ฮ่องกง HK50)
     # ดัชนี US (category us_index) ไม่โดน guard นี้ — เทรดได้ปกติ
     if _sym_cat == "index" and cfg.get("TRADE_INDEX", "true").lower() not in ("1", "true", "yes", "on"):

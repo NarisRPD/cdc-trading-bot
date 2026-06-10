@@ -158,6 +158,21 @@ def in_volatile_window(sym: str, open_range_min: int = 30, close_range_min: int 
     return False
 
 
+def in_us_session(buffer_min: int = 0, now: datetime = None) -> bool:
+    """True ถ้าตอนนี้อยู่ในช่วงตลาดหุ้น US เปิด รวม buffer ก่อนเปิด (เวลาไทย)
+    เช่น buffer_min=30 → True ตั้งแต่ 20:00 ไทย (ก่อนเปิด 20:30) ถึง 03:00 ไทย
+    ใช้กับ FX session mode: เทรด FX เฉพาะนอกช่วงนี้"""
+    now = now or datetime.now(_TZ_THAI)
+    wd = now.weekday()
+    t_open = _at(now, US_OPEN_H, US_OPEN_M) - timedelta(minutes=buffer_min)
+    t_close = _at(now, US_CLOSE_H, US_CLOSE_M)
+    if now < t_close:       # 00:00–03:00: session ET ของเมื่อวาน → อ-ส (wd 1-5)
+        return 1 <= wd <= 5
+    if now >= t_open:       # 20:00+ (รวม buffer): session วันนี้ → จ-ศ (wd 0-4)
+        return wd <= 4
+    return False
+
+
 def closing_soon(sym: str, buffer_min: int, now: datetime = None) -> bool:
     """ตลาดของ sym ใกล้ปิดภายใน buffer_min นาทีไหม (เวลาไทย) — crypto → False เสมอ"""
     if is_24h(sym):

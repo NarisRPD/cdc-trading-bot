@@ -1242,6 +1242,8 @@ def main():
     max_per_dir = int(cfg.get("MAX_PER_DIRECTION", "0") or "0")    # จำกัดไม้ทิศเดียวกัน (0=ไม่จำกัด)
     max_per_grp = int(cfg.get("MAX_PER_GROUP", "1") or "0")        # ไม้/กลุ่ม ดีฟอลต์ (จ-ศ · 0=ไม่จำกัด)
     max_per_grp_us = int(cfg.get("MAX_PER_GROUP_US", "2") or "0")  # กลุ่ม "หุ้น/ดัชนี US" เปิดได้กี่ไม้ (US มีหลายตัว)
+    fx_session_mode = cfg.get("FX_SESSION_MODE", "false").lower() in ("1", "true", "yes", "on")
+    fx_max_pos = int(cfg.get("FX_MAX_POSITIONS", "3") or "3")      # ลิมิตกลุ่ม FX เมื่อ FX_SESSION_MODE เปิด
     digest_hour = int(cfg.get("DIGEST_HOUR", "8"))                # ชั่วโมงส่งสรุปประจำวัน
     heartbeat_sec = int(float(cfg.get("HEARTBEAT_MIN", "0")) * 60)  # แจ้งสถานะทุก N นาที (0=ปิด)
     _state = _load_state()
@@ -1735,6 +1737,10 @@ def main():
                             if datetime.now().weekday() < 5:       # กระจายเสี่ยง (จ-ศ · ลิมิตแยกตามกลุ่ม)
                                 grp = market_hours.correlation_group(sym)
                                 lim = max_per_grp_us if grp == "หุ้น/ดัชนี" else max_per_grp
+                                # FX session mode: ปลดลิมิตกลุ่ม FX เป็น FX_MAX_POSITIONS
+                                # (ช่วงตลาด US ไม่ต้องเช็ค — build_ticket บล็อกเปิดไม้ FX อยู่แล้ว)
+                                if fx_session_mode and grp == "FX" and fx_max_pos > 0:
+                                    lim = fx_max_pos
                                 if lim > 0 and _count_group(grp) >= lim:
                                     scan_res.append((sym, dr, "skip", f"กระจายเสี่ยง: {grp} ครบ {lim}"))
                                     continue
