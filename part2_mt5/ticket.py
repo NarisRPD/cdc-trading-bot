@@ -282,7 +282,11 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
             _sf_cfg = cfg
             if bias.get("source", "") in _MOMENTUM_EXEMPT:
                 # ปิดเฉพาะ Momentum confirm ให้กลยุทธ์ที่มันขัดธรรมชาติ — filter อื่นยังตรวจปกติ
-                _sf_cfg = {**cfg, "SCALP_FILTER_MOMENTUM": "false"}
+                # และลดเกณฑ์ score ลง 1 ตามสัดส่วน (ตัด filter ให้คะแนนออก 1 ตัว:
+                # เดิม 2-จาก-3 → 1-จาก-2 · ไม่งั้นต้องผ่าน LiqSweep+VWAPdist ทั้งคู่ = แทบเป็นไปไม่ได้)
+                _min_sc = max(1, int(cfg.get("SCALP_FILTER_MIN_SCORE", "2") or "2") - 1)
+                _sf_cfg = {**cfg, "SCALP_FILTER_MOMENTUM": "false",
+                           "SCALP_FILTER_MIN_SCORE": str(_min_sc)}
             _sf = scalp_filters.check_all_filters(_sf_df, direction, _sf_cfg, symbol=exsym,
                                                   category=_sym_cat, atr=atr)
             if not _sf.get("pass"):
