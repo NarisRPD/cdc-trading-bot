@@ -991,33 +991,96 @@ def _stats_text() -> str:
     return "\n".join(lines)
 
 
-def _help_text() -> str:
+def _help_text(cfg: dict = None) -> str:
+    """รายการคำสั่ง + กลยุทธ์/เกราะที่ "เปิดอยู่จริง" — อ่านจาก config สด ไม่มีวัน stale"""
+    cfg = cfg or {}
+
+    def _on(key, default="false"):
+        return cfg.get(key, default).lower() in ("1", "true", "yes", "on")
+
+    # ── กลยุทธ์ entry ทั้งหมด: (flag, ป้าย+TF จาก config จริง) ──────────────
+    _strats = [
+        ("USE_SUPERTREND", f"📈 SuperTrend {cfg.get('ST_TF', 'H1')}"),
+        ("USE_HALFTREND",  f"〰️ HalfTrend {cfg.get('HT_TF', 'H1')}"),
+        ("USE_UTBOT",      f"🤖 UT Bot {cfg.get('UTB_TF', 'M15')}"),
+        ("USE_EMA_STOCH",  f"⚡ EMA+Stoch {cfg.get('SCALP_TF', 'M15')}"),
+        ("USE_EMA_M5",     f"🎯 EMA Ribbon {cfg.get('EMA_M5_TF', 'M5')} (FX)"),
+        ("USE_FX_ORB",     "🌅 FX ORB (กรอบเอเชีย→London)"),
+        ("USE_HYBRID_PRO", "🔀 Hybrid-Pro (H1 เทรนด์+M15 ย่อ)"),
+        ("USE_PA",         f"📐 Price Action {cfg.get('PA_TF', 'H1')}"),
+        ("USE_VWAP",       f"🌊 VWAP Bounce {cfg.get('VWAP_TF', 'M5')}"),
+        ("USE_BB_SQUEEZE", f"🎈 BB Squeeze {cfg.get('BB_TF', 'M5')}"),
+        ("USE_RSI_DIV",    f"🔍 RSI Divergence {cfg.get('RSI_DIV_TF', 'M5')}"),
+        ("USE_ORB_PRO",    f"🚀 ORB session={cfg.get('ORB_SESSION', 'london')}"),
+        ("USE_RANGE_MR",   f"📦 Range MR {cfg.get('RANGE_MR_TF', 'M15')} (เล่นกรอบ)"),
+        ("USE_RVOL_BRK",   f"📊 RVOL Breakout {cfg.get('RVOL_TF', 'M15')} (in-play)"),
+        ("USE_RSI2",       f"📉 RSI-2 Pullback {cfg.get('RSI2_TF', 'H1')} (Connors)"),
+        ("USE_PAIRS_ARB",  f"⚖️ Pairs Stat-Arb ({cfg.get('PAIRS_LIST', 'BTCUSD:ETHUSD')})"),
+    ]
+    on_list = [lbl for k, lbl in _strats if _on(k)]
+    off_list = [lbl.split(" ", 1)[1].split(" (")[0] for k, lbl in _strats if not _on(k)]
+
+    # ── เกราะ/ฟิลเตอร์ที่เปิดอยู่ ────────────────────────────────────────────
+    guards = []
+    if _on("USE_MTF_FILTER"):
+        _mr = " +mean-rev" if _on("MTF_INCLUDE_MEANREV") else ""
+        guards.append(f"MTF กันสวนเทรนด์ {cfg.get('MTF_TF', 'H1')}{_mr}")
+    if _on("USE_REGIME_FILTER"):
+        guards.append(f"Regime no-trade วัน sideways ({cfg.get('REGIME_TF', 'H1')})")
+    if _on("USE_SCALP_FILTERS"):
+        _sub = [n for f, n in (("SCALP_FILTER_KILL_ZONE", "KillZone"), ("SCALP_FILTER_DEAD_ZONE", "DeadZone"),
+                               ("SCALP_FILTER_LIQ_SWEEP", "LiqSweep"), ("SCALP_FILTER_MOMENTUM", "Momentum"),
+                               ("SCALP_FILTER_VWAP", "VWAPdist")) if _on(f, "true")]
+        guards.append(f"Pro filters [{'/'.join(_sub)}] score≥{cfg.get('SCALP_FILTER_MIN_SCORE', '2')}")
+    if _on("USE_CONFLUENCE", "true"):
+        guards.append(f"Confluence หลายกลยุทธ์เห็นพ้อง → lot ×{cfg.get('CONFLUENCE_LOT_MULT', '1.5')}")
+    if _on("AUTO_DISABLE_LOSERS", "true"):
+        guards.append(f"Auto-disable กลยุทธ์แพ้ (<{cfg.get('AUTO_DISABLE_WINRATE', '35')}% ใน ≥{cfg.get('AUTO_DISABLE_MIN_TRADES', '8')} ไม้)")
+    if _on("USE_EDGE_SIZING"):
+        guards.append("Edge sizing — lot ตาม edge จริงของกลยุทธ์")
+    if float(cfg.get("BLACKOUT_MIN", "30") or "0") > 0 and cfg.get("FINNHUB_API_KEY", ""):
+        guards.append(f"News blackout ±{cfg.get('BLACKOUT_MIN', '30')} นาที")
+    if float(cfg.get("US_OPEN_SKIP_MIN", "30") or "0") > 0 or float(cfg.get("US_CLOSE_SKIP_MIN", "15") or "0") > 0:
+        guards.append(f"กันช่วงเปิด/ปิดตลาด US {cfg.get('US_OPEN_SKIP_MIN', '30')}/{cfg.get('US_CLOSE_SKIP_MIN', '15')} นาที")
+    if _on("FX_SESSION_MODE"):
+        guards.append(f"FX Session — flat FX ก่อน US เปิด {cfg.get('FX_FLATTEN_BEFORE_US_MIN', '30')} นาที")
+    guards.append("RSI สุดขั้ว · spread · R:R หลังต้นทุน · Gemini AI gate (เสมอ)")
+
+    # ── จัดการไม้หลังเปิด ────────────────────────────────────────────────────
+    mng = (f"Partial {cfg.get('PARTIAL_AT_R', '1.0')}R → BE {cfg.get('BREAKEVEN_AT_R', '1.5')}R → "
+           f"Trailing×{cfg.get('TRAIL_FACTOR', '0.7')} → TP {cfg.get('HARD_TP_R', '2.5')}R")
+    extras = []
+    if _on("USE_REVERSAL_EXIT"):
+        extras.append(f"Reversal exit {cfg.get('REVERSAL_EXIT_TF', 'M5')}")
+    if _on("USE_TIME_STOP"):
+        extras.append(f"Time stop {cfg.get('TIME_STOP_MIN', '45')} นาที")
+    if _on("USE_MULTI_SIGNAL_EXIT"):
+        extras.append("Multi-signal exit")
+    extras.append(f"Drawdown {cfg.get('MAX_DRAWDOWN_PCT', '10')}% → หยุดเปิดไม้ใหม่")
+
     return (
         "🤖 คำสั่ง Part 2 (MT5 Auto-Trading)\n\n"
-        "/ping — 🏓 เช็คว่าบอทยังมีชีวิต + สถานะ MT5 + ขาดทุนวันนี้\n"
-        "/status — สถานะสด: โหมด · พอร์ต · P/L วันนี้ · ไม้ที่เปิด\n"
-        "/scan — 🔍 สแกนตลาดทันที (ไม่รอรอบปกติ) + ส่งผลมาที่นี่\n"
-        "/stats — สถิติผลเทรดสะสม (win rate · profit factor)\n"
-        "/insights — 🧠 บทเรียน: เทคนิคไหนได้เงินจริง (บอทเรียนรู้จากผลจริง)\n"
-        "/export [csv|jsonl] — 📊 ส่งออกข้อมูลเทรดไปเทรน AI ภายนอก (ดีฟอลต์ csv)\n"
-        "/pause — ⏸️ หยุดเปิดไม้ใหม่ชั่วคราว (ไม้เก่ายังจัดการต่อ)\n"
-        "/resume — ▶️ กลับมาเปิดไม้อัตโนมัติ\n"
-        "/reset_daily — 🔄 รีเซ็ตโควต้าขาดทุนต่อวัน (นับใหม่จากตอนนี้)\n"
-        "/closeall — 🧹 ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)\n"
-        "/update — ⬇️ ดึงโค้ดใหม่จาก GitHub แล้ว restart (ใช้ทุกครั้งที่อัปเดต)\n"
-        "/stop — 🛑 หยุดบอท (ไม้ที่เปิดอยู่ยังคงเปิดใน MT5)\n"
-        "/restart — 🔄 Restart บอท (ไม่ดึงโค้ดใหม่)\n"
-        "/help — รายการคำสั่งนี้\n\n"
-        "⚙️ แก้ Config ผ่าน Telegram:\n"
-        "/set KEY=VALUE — ตั้งค่า config โดยตรง เช่น /set BREAKEVEN_AT_R=2.0\n"
-        "/ai <คำขอ> — ให้ AI แก้ config ด้วยภาษาธรรมชาติ\n"
-        "  ตัวอย่าง: /ai ปิด HalfTrend\n"
-        "  ตัวอย่าง: /ai เพิ่ม breakeven เป็น 2R และปิด notify scan\n"
-        "  ⚠️ ต้องพิมพ์ /restart หลังแก้ config ให้มีผล\n\n"
-        "🔁 โหมด Auto: บอทสแกน → ตัดสินใจ → ยิงออเดอร์เอง → รายงานที่นี่\n"
-        "   เปิดไม้ใหม่เมื่อผ่านด่าน: SuperTrend/HalfTrend/UT Bot/Price Action + แท่งเทียน/วอลุ่ม + Gemini + เกราะความเสี่ยง\n\n"
-        "ℹ️ จัดการเอง: TP +2% ของราคา · +1R เลื่อน SL เท่าทุน · เลี่ยงข่าวแรง\n"
-        "🛡️ เกราะ: เบรกขาดทุนวัน + ขาดทุนสะสม (drawdown) · จำกัดไม้ทิศเดียว · สรุปประจำวัน"
+        "/ping — 🏓 บอทยังมีชีวิต + สถานะ MT5\n"
+        "/status — สถานะสด: โหมด · พอร์ต · P/L · ไม้ที่เปิด\n"
+        "/scan — 🔍 สแกนตลาดทันที\n"
+        "/stats — สถิติสะสม (win rate · profit factor)\n"
+        "/insights — 🧠 เทคนิคไหนได้เงินจริง (เรียนรู้จากผลจริง)\n"
+        "/export [csv|jsonl] — 📊 ส่งออกข้อมูลเทรด\n"
+        "/pause · /resume — ⏸️▶️ หยุด/เริ่มเปิดไม้ใหม่\n"
+        "/reset_daily — 🔄 รีเซ็ตโควต้าขาดทุนวัน\n"
+        "/closeall — 🧹 ปิดไม้ทั้งหมด (ฉุกเฉิน)\n"
+        "/update — ⬇️ ดึงโค้ด GitHub + restart\n"
+        "/stop · /restart — 🛑🔄 หยุด/รีสตาร์ทบอท\n"
+        "/set KEY=VALUE — ⚙️ แก้ config ตรง\n"
+        "/ai <คำขอ> — แก้ config ภาษาคน (เช่น /ai ปิด VWAP)\n"
+        "   ⚠️ /restart หลังแก้ config เสมอ\n\n"
+        f"📈 กลยุทธ์ที่เปิดอยู่ ({len(on_list)}):\n" +
+        "\n".join(f"  {s}" for s in on_list) +
+        (f"\n  (ปิดอยู่: {', '.join(off_list)})" if off_list else "") +
+        f"\n\n🛡️ เกราะที่ทำงาน ({len(guards)}):\n" +
+        "\n".join(f"  • {g}" for g in guards) +
+        f"\n\n🔧 จัดการไม้: {mng}\n  • " + " · ".join(extras) +
+        "\n\nℹ️ กฎ: ขาดทุนไม่ปิด (ปล่อยถึง SL) · กำไรปิดได้"
     )
 
 
@@ -1400,7 +1463,7 @@ def main():
                                      f"ขาดทุนวันนี้: ${journal.today_pnl() - _daily_pnl_baseline:+.2f} "
                                      f"(เพดาน {max_daily_loss}%)")
                     elif cmd in ("help", "start"):
-                        tg.send_text(token, chat, _help_text())
+                        tg.send_text(token, chat, _help_text(cfg))
                     elif cmd == "status" and _ensure_connected(cfg):
                         tg.send_text(token, chat, _status_text(auto_on, execute_on))
                     elif cmd == "stats":
