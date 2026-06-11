@@ -494,6 +494,14 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
         risk_pct = min(risk_pct * edge_mult, _cap2)
         log.info("📊 Edge sizing %s (%s) — ×%.2f → risk %.2f%%", exsym, _source or "?", edge_mult, risk_pct)
 
+    # โลหะมีค่า (XAU/XAG/XPT/XPD): SL กว้าง + contract ใหญ่ → เสี่ยง/ไม้โตกว่าสินทรัพย์อื่น ~5 เท่า
+    # (ข้อมูลจริง 11 มิ.ย.: โลหะเสี่ยงเฉลี่ย $10 vs อื่น $1.8 · ขาดทุนโลหะ -$29 จาก -$38 ทั้งวัน)
+    # เพดานแยก MAX_RISK_PCT_METAL (ดีฟอลต์ 1.0% = ครึ่งของเพดานปกติ) · 0=ปิด ใช้เพดานรวม
+    _metal_cap = (float(cfg.get("MAX_RISK_PCT_METAL", "1.0") or "0")
+                  if _u.startswith(("XAU", "XAG", "XPT", "XPD")) else 0.0)
+    if _metal_cap > 0:
+        risk_pct = min(risk_pct, _metal_cap * 0.97)   # headroom กัน lot ปัดขึ้นแล้วเด้ง guard
+
     sizing = mt5.lots_for_risk(exsym, used_bal, risk_pct, spot, sl)
 
     # VPOC Filter: ลด lot เมื่ออยู่ใน equilibrium zone (ราคาใกล้ VPOC — ยังไม่มีทิศชัด)
@@ -509,6 +517,8 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     # เกราะความเสี่ยง: ข้ามไม้ที่ความเสี่ยงจริง (หลังปัด lot ขั้นต่ำ) เกินเพดาน
     # (เคสพอร์ตเล็ก + SL กว้าง เช่นทองบนพอร์ต $500 → lot ขั้นต่ำเสี่ยงทะลุเป้า)
     max_risk_pct = float(cfg.get("MAX_RISK_PCT", "2.0"))
+    if _metal_cap > 0:
+        max_risk_pct = min(max_risk_pct, _metal_cap)   # โลหะใช้เพดานเข้มกว่า — lot ขั้นต่ำเสี่ยงเกิน → ข้าม
     if sizing and sizing.get("actual_pct") is not None and sizing["actual_pct"] > max_risk_pct:
         log.debug("ข้าม %s — เสี่ยงจริง %.1f%% เกินเพดาน %.1f%% (พอร์ตเล็ก/SL กว้างไปสำหรับตัวนี้)",
                   exsym, sizing["actual_pct"], max_risk_pct)
