@@ -84,10 +84,14 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
     _sym_cat = market_hours.category(exsym)
 
     # ปิดเทรด FX ทั้งหมดถ้า TRADE_FX=false (FX ขยับน้อย — ผู้ใช้เลี่ยง) · จุดเดียวคุมทุกกลยุทธ์
+    # ยกเว้นกลยุทธ์ใน TRADE_FX_ALLOW (เช่น ema_m5 — สถิติจริง 11 มิ.ย. win 67% ดีสุดของบอท)
     if _sym_cat == "fx" and cfg.get("TRADE_FX", "true").lower() not in ("1", "true", "yes", "on"):
-        log.debug("ข้าม %s — ปิดเทรด FX (TRADE_FX=false)", exsym)
-        return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
-                "reason": "ปิดเทรด FX (TRADE_FX=false)"}
+        _fx_allow = {s.strip().lower() for s in cfg.get("TRADE_FX_ALLOW", "").split(",") if s.strip()}
+        if (bias.get("source") or "").lower() not in _fx_allow:
+            log.debug("ข้าม %s — ปิดเทรด FX (TRADE_FX=false · source=%s ไม่อยู่ใน allow)",
+                      exsym, bias.get("source"))
+            return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                    "reason": "ปิดเทรด FX (TRADE_FX=false)"}
 
     # FX Session Mode — เทรด FX เฉพาะ "นอกเวลาตลาด US" (Asian/London)
     # ช่วง US เปิด volatility ข้ามตลาดสูง FX โดนลาก → หยุดเปิดไม้ใหม่ตั้งแต่
