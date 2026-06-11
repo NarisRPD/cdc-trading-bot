@@ -1394,7 +1394,16 @@ def main():
     last_scan = 0.0
     last_journal = 0.0
     counter = 0
-    recent: dict = {}
+    # cooldown กันไม้เบิ้ล: restore จาก state ให้รอด restart — บั๊กเดิม in-memory ล้วน
+    # บอท restart แล้วลืมหมด → เปิด symbol+ทิศเดิมซ้ำใน 1-2 นาที (ข้อมูล 11 มิ.ย.: เบิ้ล 7 ไม้ แพ้ทั้ง 7)
+    recent: dict = {k: v for k, v in (_state.get("recent_cooldown") or {}).items()
+                    if isinstance(v, (int, float)) and time.time() - v < cooldown}
+
+    def _touch_recent(key: str, ts: float) -> None:
+        """อัปเดต cooldown + persist ลง part2_state.json ทันที (ผ่าน restart ได้)"""
+        recent[key] = ts
+        _state["recent_cooldown"] = recent
+        _save_state(_state)
     # โหลด daily-halt state จาก _state (persist ผ่าน restart)
     # ถ้า reset_daily ถูกเรียกวันนี้ → ใช้ baseline ที่บันทึกไว้ ไม่ใช่ 0
     _today_iso = datetime.now().date().isoformat()
@@ -1879,9 +1888,9 @@ def main():
                                 scan_res.append((sym, dr, "skip", f"AI {dec} {conf}%"))
                                 log.info("⛔ ข้าม %s %s — AI: %s %s%% %s", sym, dr, dec, conf,
                                          (t["verdict"].get("reason") or "")[:60])
-                                recent[key] = now + scan_gap   # กัน re-scan รอบถัดมาทันที
+                                _touch_recent(key, now + scan_gap)   # กัน re-scan รอบถัดมาทันที
                                 continue
-                            recent[key] = now
+                            _touch_recent(key, now)
                             if _auto_open(cfg, token, chat, t, execute_on):
                                 opened.add(sym)
                                 scan_res.append((sym, dr, "open", _strat_tags(t)))
@@ -1928,7 +1937,7 @@ def main():
                             mid = tg.send_ticket(token, chat, text, tid)
                             if mid:
                                 pending = {"tid": tid, "msg_id": mid, "ticket": t, "sent_at": now}
-                                recent[key] = now
+                                _touch_recent(key, now)
                                 log.info("เสนอใบสั่ง %s %s", t["exsym"], t["direction"])
             # 4) Heartbeat — แจ้งสถานะทุก N นาที (กัน user คิดว่าบอทหยุดทำงาน)
             if heartbeat_sec > 0 and now - last_heartbeat >= heartbeat_sec:
