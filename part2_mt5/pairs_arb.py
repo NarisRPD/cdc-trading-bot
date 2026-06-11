@@ -278,13 +278,22 @@ def _tick_inner(cfg: dict, mt5c, token: str, chat: str) -> None:
             continue                               # เพิ่งเปิดขาไม่สำเร็จ — พัก cooldown ก่อน
         if abs(z) < z_entry or abs(z) >= z_stop:
             continue
-        if zs["corr"] < min_corr:
-            log.info("pairs ข้าม %s — corr %.2f < %.2f (คู่ไม่สัมพันธ์พอ)", pid, zs["corr"], min_corr)
+        # ความสัมพันธ์ต้อง "แรง" — ทิศไหนก็ได้: +0.7 ขึ้น (วิ่งตามกัน) หรือ -0.7 ลง (วิ่งสวนกันเสถียร)
+        # ใช้ไม่ได้คือ |corr| ต่ำ = ต่างคนต่างวิ่งจริงๆ ไม่มีเชือกผูก ไม่มีอะไรให้หุบกลับ
+        if abs(zs["corr"]) < min_corr:
+            log.info("pairs ข้าม %s — |corr| %.2f < %.2f (ความสัมพันธ์ไม่แรงพอ)", pid, zs["corr"], min_corr)
             continue
 
-        # z > 0 = A แพงเกิน → sell A / buy B · z < 0 = กลับด้าน
+        # ทิศขา A: z > 0 = A แพงเกินความสัมพันธ์ → sell A · z < 0 = กลับด้าน
+        # ทิศขา B ขึ้นกับ "เครื่องหมาย beta":
+        #   beta > 0 (คู่วิ่งตามกัน)  → ขาตรงข้าม A (hedge แบบคลาสสิก)
+        #   beta < 0 (คู่วิ่งสวนกัน)  → ขา "เดียวกับ" A — เพราะความสัมพันธ์เป็นกระจกเงา
+        #   การถือตรงข้ามบนคู่สวนกัน = เดิมพันซ้ำสองเท่า ไม่ใช่ hedge!
         dir_a = "sell" if z > 0 else "buy"
-        dir_b = "buy" if z > 0 else "sell"
+        if zs["beta"] >= 0:
+            dir_b = "buy" if z > 0 else "sell"
+        else:
+            dir_b = dir_a
         lots_a = _lots_for_notional(sym_a, notional)
         lots_b = _lots_for_notional(sym_b, notional)
         if lots_a <= 0 or lots_b <= 0:
@@ -313,9 +322,10 @@ def _tick_inner(cfg: dict, mt5c, token: str, chat: str) -> None:
         changed = True
         log.info("pairs เปิด %s — z=%+.2f beta=%.2f corr=%.2f · %s %s %.2f / %s %s %.2f",
                  pid, z, zs["beta"], zs["corr"], dir_a, sym_a, lots_a, dir_b, sym_b, lots_b)
+        _rel = "↔️ คู่วิ่งสวนกัน (inverse)" if zs["beta"] < 0 else "↗️ คู่วิ่งตามกัน"
         _notify(token, chat,
                 f"⚖️ เปิดคู่ Pairs (Stat-Arb) — {pid}\n"
-                f"📐 z-score {z:+.2f} (เข้าที่ ±{z_entry}) · corr {zs['corr']:.2f}\n"
+                f"📐 z-score {z:+.2f} (เข้าที่ ±{z_entry}) · corr {zs['corr']:+.2f} · {_rel}\n"
                 f"🔴 {dir_a.upper()} {sym_a} {lots_a} lot · 🟢 {dir_b.upper()} {sym_b} {lots_b} lot\n"
                 f"🎯 ออกเมื่อ z หุบ ≤ ±{z_exit} · ตัดที่ ±{z_stop} หรือ {max_hours:.0f} ชม.\n"
                 f"ℹ️ market-neutral — ไม่เดิมพันทิศตลาด")
