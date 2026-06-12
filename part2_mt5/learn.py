@@ -318,10 +318,29 @@ def _clean_symbol(sym: str) -> str:
     return s[:-1] if (s.endswith("M") and len(s) > 4) else s
 
 
+def amnesty(source: str) -> int:
+    """ล้างประวัติกลยุทธ์จากสถิติ auto-disable/auto-lot (mark ไม่ลบ — ข้อมูลยังอยู่ใน export)
+    ใช้เมื่อประวัติเก่าปนเปื้อน (เช่น บั๊กไม้เบิ้ล/เงื่อนไขที่แก้ไปแล้ว) → ให้เริ่มนับใหม่
+    คืนจำนวนไม้ที่ถูก mark"""
+    src = (source or "").strip().lower()
+    if not src:
+        return 0
+    recs = _load()
+    n = 0
+    for r in recs:
+        if (r.get("source") or "").lower() == src and not r.get("amnesty"):
+            r["amnesty"] = True
+            n += 1
+    if n:
+        _save(recs)
+        log.info("learn: ล้างประวัติ '%s' %d ไม้ (amnesty) — auto-disable นับใหม่", src, n)
+    return n
+
+
 def source_stats(min_trades: int = 1) -> dict:
     """สถิติแยกตามกลยุทธ์ (source) จากไม้ปิด → {source: {n, win_rate, avg_r, total}}
-    ใช้สำหรับ auto-disable + auto lot by edge"""
-    closed = _closed()
+    ใช้สำหรับ auto-disable + auto lot by edge · ไม่นับไม้ amnesty (ประวัติที่ถูกล้าง)"""
+    closed = [r for r in _closed() if not r.get("amnesty")]
     by_src: dict = {}
     for r in closed:
         s = r.get("source")
@@ -331,8 +350,9 @@ def source_stats(min_trades: int = 1) -> dict:
 
 
 def symbol_stats(min_trades: int = 1) -> dict:
-    """สถิติแยกตาม symbol (ตัด suffix โบรก) → {symbol: {n, win_rate, avg_r, total}}"""
-    closed = _closed()
+    """สถิติแยกตาม symbol (ตัด suffix โบรก) → {symbol: {n, win_rate, avg_r, total}}
+    ไม่นับไม้ amnesty — ไม้ปนเปื้อน (บั๊กเบิ้ล) เคยลาก symbol ติดบัญชีดำไปด้วย"""
+    closed = [r for r in _closed() if not r.get("amnesty")]
     by_sym: dict = {}
     for r in closed:
         sym = _clean_symbol(r.get("symbol", ""))

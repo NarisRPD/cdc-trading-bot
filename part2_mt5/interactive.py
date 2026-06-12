@@ -1068,6 +1068,7 @@ def _help_text(cfg: dict = None) -> str:
         "/insights — 🧠 เทคนิคไหนได้เงินจริง (เรียนรู้จากผลจริง)\n"
         "/export [csv|jsonl] — 📊 ส่งออกข้อมูลเทรด\n"
         "/shadow — 🧪 สถานะกลยุทธ์ช่วงทดลองงาน (paper trade)\n"
+        "/reset_strategy ชื่อ — 🕊️ ล้างประวัติ auto-disable ให้กลยุทธ์กลับมาเทรดได้\n"
         "/pause · /resume — ⏸️▶️ หยุด/เริ่มเปิดไม้ใหม่\n"
         "/reset_daily — 🔄 รีเซ็ตโควต้าขาดทุนวัน\n"
         "/closeall — 🧹 ปิดไม้ทั้งหมด (ฉุกเฉิน)\n"
@@ -1524,6 +1525,25 @@ def main():
                                      f"🔄 รีเซ็ตโควต้าขาดทุนวันนี้แล้ว\n"
                                      f"นับขาดทุนใหม่จาก ${_daily_pnl_baseline:.2f} · เพดาน {max_daily_loss}%\n"
                                      "บอทกลับมาเปิดไม้ได้แล้ว ✅")
+                    elif cmd == "reset_strategy":
+                        # /reset_strategy <source> — ล้างประวัติ auto-disable ให้กลยุทธ์กลับมาเทรดได้
+                        # (mark amnesty ไม่ลบข้อมูล — export ยังเห็นครบ · ใช้เมื่อประวัติเก่าปนเปื้อน)
+                        _src = args[0].lower() if args else ""
+                        if not _src:
+                            tg.send_text(token, chat,
+                                         "⚙️ รูปแบบ: /reset_strategy ชื่อกลยุทธ์\n"
+                                         "เช่น /reset_strategy rsi_div\n"
+                                         "ผล: สถิติ auto-disable ของกลยุทธ์นั้นเริ่มนับใหม่จากศูนย์")
+                        else:
+                            _n_am = learn.amnesty(_src)
+                            if _n_am:
+                                tg.send_text(token, chat,
+                                             f"🕊️ ล้างประวัติ '{_src}' แล้ว {_n_am} ไม้\n"
+                                             f"auto-disable เริ่มนับใหม่ — กลยุทธ์กลับมาเทรดได้ทันที\n"
+                                             f"(แนะนำใส่ shadow ก่อน: /set STRATEGY_SHADOW_LIST={_src})")
+                            else:
+                                tg.send_text(token, chat,
+                                             f"ไม่พบไม้ปิดของ '{_src}' ที่ยังไม่ถูกล้าง — เช็คชื่อด้วย /insights")
                     elif cmd == "set":
                         # /set KEY=VALUE — แก้ config โดยตรง ไม่ผ่าน AI
                         raw_arg = _args_raw.strip()

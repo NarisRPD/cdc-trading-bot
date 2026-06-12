@@ -16,6 +16,7 @@ import patterns
 import risk
 import gemini_gate
 import learn
+import shadow
 import scalp as _scalp_module   # ใช้ vpoc() — import ที่ module level เพื่อกัน shadowing กับ param scalp
 import scalp_filters             # Pro scalping filters (Kill Zone/Liquidity/Momentum/VWAP)
 
@@ -144,11 +145,14 @@ def build_ticket(exsym: str, bias: dict, account: dict, cfg: dict, mt5,
 
     # Auto-disable เทคนิคที่แพ้: กลยุทธ์/symbol ที่ win-rate ต่ำกว่าเกณฑ์ในข้อมูลจริง → ข้ามเงียบ
     # (ใช้ผลเทรดจริงนำ — block เฉพาะตัวที่มีหลักฐานแพ้ชัด · ดู learn.should_skip)
-    _skip, _skip_reason = learn.should_skip(bias.get("source", ""), exsym, cfg)
-    if _skip:
-        log.info("⛔ ข้าม %s — %s", exsym, _skip_reason)
-        return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
-                "reason": _skip_reason}
+    # ยกเว้นกลยุทธ์ช่วงทดลองงาน (shadow) — paper trade เสียเงินไม่ได้ ต้องปล่อยให้สะสมสถิติแก้ตัว
+    # ไม่งั้นสถิติแช่แข็ง (โดนพัก → ไม่มีไม้ใหม่ → win rate ค้างต่ำตลอดกาล = ขังถาวร)
+    if (bias.get("source") or "").lower() not in shadow.shadow_set(cfg):
+        _skip, _skip_reason = learn.should_skip(bias.get("source", ""), exsym, cfg)
+        if _skip:
+            log.info("⛔ ข้าม %s — %s", exsym, _skip_reason)
+            return {"skipped": True, "exsym": exsym, "direction": bias.get("direction", "buy"),
+                    "reason": _skip_reason}
 
     # เกราะพอร์ตขั้นต่ำสำหรับโลหะ: ทอง/เงินไม้ขั้นต่ำ (0.01 lot) ใหญ่เกินพอร์ตเล็ก
     # → ปลดล็อกให้เทรดเมื่อพอร์ตถึงเกณฑ์ (GOLD_MIN_BALANCE / SILVER_MIN_BALANCE) อัตโนมัติ
