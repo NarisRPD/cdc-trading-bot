@@ -34,7 +34,7 @@ import numpy as np
 
 log = logging.getLogger("part2.pairs")
 
-_MAGIC = 260606                      # แยกจาก Part 2 หลัก (260605) — ระบบอื่นไม่แตะขา pair
+_MAGIC = 260606                      # แยกจาก Scalping Bot หลัก (260605) — ระบบอื่นไม่แตะขา pair
 _FILE = os.path.join(os.path.dirname(__file__), "part2_pairs.json")
 _last_check = 0.0                    # throttle
 _fail_until: dict = {}               # {pair_id: ts} — cooldown หลังเปิดขาไม่สำเร็จ
@@ -127,7 +127,7 @@ def _open_leg(exsym: str, direction: str, lots: float, cat_sl_pct: float) -> "di
     base = {"action": m5.TRADE_ACTION_DEAL, "symbol": exsym, "volume": float(lots),
             "type": m5.ORDER_TYPE_BUY if is_buy else m5.ORDER_TYPE_SELL,
             "price": price, "sl": round(sl, 5), "deviation": 30,
-            "magic": _MAGIC, "comment": "Part2-Pairs", "type_time": m5.ORDER_TIME_GTC}
+            "magic": _MAGIC, "comment": "ScalpBot-Pairs", "type_time": m5.ORDER_TIME_GTC}
     for fill in (m5.ORDER_FILLING_IOC, m5.ORDER_FILLING_FOK, m5.ORDER_FILLING_RETURN):
         res = m5.order_send({**base, "type_filling": fill})
         if res is None:

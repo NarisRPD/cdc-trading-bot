@@ -1,5 +1,5 @@
 """
-part2_mt5/ticket.py — ประกอบ "ใบสั่งเทรด" จาก bias (SuperTrend/HalfTrend/UT Bot บนข้อมูล MT5) + วิเคราะห์ Part 2
+part2_mt5/ticket.py — ประกอบ "ใบสั่งเทรด" จาก bias (SuperTrend/HalfTrend/UT Bot บนข้อมูล MT5) + วิเคราะห์ Scalping Bot
 
 ขั้นตอน: ดึง OHLC entry-TF → แท่งเทียน/วอลุ่ม/โครงสร้าง → SL จากโครงสร้าง + TP R:R
 → lot จากสเปกโบรกจริง → risk gate → Gemini ปิดช่องโหว่ → ข้อความใบสั่ง (คนกดเอง)
@@ -602,7 +602,7 @@ def format_ticket(t: dict) -> str:
     if t.get("confluence_boosted") and len(_confl) >= 2:
         _confl_lbl = " + ".join(_src_map.get(s, s) for s in _confl)
         lines.append(f"🔗 Confluence ×{len(_confl)}: {_confl_lbl} — เพิ่ม lot")
-    # ยืนยัน Part 2
+    # ยืนยัน Scalping Bot
     conf = []
     if t["candles"]:
         conf.append("🕯️ " + ", ".join(c["name"] for c in t["candles"][:2]))

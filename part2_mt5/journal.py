@@ -1,5 +1,5 @@
 """
-part2_mt5/journal.py — บันทึกผลเทรดของ Part 2 + สถิติ + P/L วันนี้
+part2_mt5/journal.py — บันทึกผลเทรดของ Scalping Bot + สถิติ + P/L วันนี้
 
 อ่านจาก history ของ MT5 (เฉพาะดีล magic 260605) → บันทึกไม้ที่ปิดแล้วลง part2_journal.json
 ใช้คำนวณ win rate / profit factor (รู้ว่าระบบทำเงินจริงไหม) + เช็กขาดทุนต่อวัน
@@ -34,7 +34,7 @@ def _save(data: list) -> None:
 
 
 def record_closed(days_back: int = 7) -> list:
-    """อ่านดีลปิด (DEAL_ENTRY_OUT) magic Part 2 ย้อนหลัง → บันทึกอันใหม่ คืน list ไม้ที่เพิ่งปิด (ใช้รายงาน Telegram)
+    """อ่านดีลปิด (DEAL_ENTRY_OUT) magic Scalping Bot ย้อนหลัง → บันทึกอันใหม่ คืน list ไม้ที่เพิ่งปิด (ใช้รายงาน Telegram)
 
     แต่ละ entry มี: deal_id · symbol · time · profit · volume · position_id · direction · close_reason
       direction    = "buy" / "sell" (ทิศทางของ position ที่ถูกปิด)
@@ -115,7 +115,7 @@ def compute_stats() -> "dict | None":
 
 
 def today_pnl() -> float:
-    """กำไร/ขาดทุนวันนี้ = realized (ดีลปิดวันนี้) + floating (position เปิด) ของ Part 2"""
+    """กำไร/ขาดทุนวันนี้ = realized (ดีลปิดวันนี้) + floating (position เปิด) ของ Scalping Bot"""
     import MetaTrader5 as m5
     # UTC เที่ยงคืน = จุดเริ่มวันของ MT5 server (ส่วนใหญ่ UTC หรือ UTC+2/+3)
     # ใช้ UTC-aware เพื่อให้ถูกต้องบน VPS ทุก timezone (ไม่พึ่ง OS local time)

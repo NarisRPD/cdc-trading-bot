@@ -1,5 +1,5 @@
 """
-part2_mt5/tg.py — Telegram แบบโต้ตอบ (ปุ่มกด) สำหรับบอท Part 2
+part2_mt5/tg.py — Telegram แบบโต้ตอบ (ปุ่มกด) สำหรับบอท Scalping Bot
 
 ใช้ getUpdates (long-poll) รับการกดปุ่ม → ต้องเป็น "บอทตัวที่ 2" แยกจาก Part 1
 (บอท Part 1 ใช้ webhook อยู่ — ตัวเดียวกันใช้ getUpdates ไม่ได้)
@@ -89,7 +89,7 @@ def set_commands(token: str) -> None:
         {"command": "reset_strategy", "description": "ล้างประวัติ auto-disable ให้กลยุทธ์กลับมาเทรดได้"},
         {"command": "pause",    "description": "หยุดเปิดไม้ใหม่ชั่วคราว (auto)"},
         {"command": "resume",   "description": "กลับมาเปิดไม้อัตโนมัติ"},
-        {"command": "closeall", "description": "ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)"},
+        {"command": "closeall", "description": "ปิดไม้ Scalping Bot ทั้งหมดทันที (ฉุกเฉิน)"},
         {"command": "update",   "description": "ดึงโค้ดใหม่จาก GitHub แล้ว restart อัตโนมัติ"},
         {"command": "stop",     "description": "หยุดบอท (ไม้เปิดอยู่ยังคงเปิดใน MT5)"},
         {"command": "restart",  "description": "Restart บอท (ไม่ดึงโค้ดใหม่)"},

@@ -1,5 +1,5 @@
 """
-part2_mt5/risk.py — Risk Management ขั้นมืออาชีพ (หัวใจของ Part 2)
+part2_mt5/risk.py — Risk Management ขั้นมืออาชีพ (หัวใจของ Scalping Bot)
 
 หลักการ: ความเสี่ยงคือ edge จริง ไม่ใช่สัญญาณ
 - ขนาดไม้คำนวณจาก "%เสี่ยงต่อพอร์ต" + ระยะ SL (ไม่ใช่ความรู้สึก)

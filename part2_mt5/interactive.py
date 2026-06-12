@@ -980,8 +980,8 @@ def _do_open(cfg, token, chat, p, execute_on: bool) -> None:
 def _stats_text() -> str:
     s = journal.compute_stats()
     if not s:
-        return "📒 Part 2 ยังไม่มีไม้ที่ปิด — สถิติจะขึ้นหลังมีไม้ปิดไม้แรก"
-    lines = ["📊 สถิติ Part 2 (ไม้ที่ปิดแล้ว)",
+        return "📒 Scalping Bot ยังไม่มีไม้ที่ปิด — สถิติจะขึ้นหลังมีไม้ปิดไม้แรก"
+    lines = ["📊 สถิติ Scalping Bot (ไม้ที่ปิดแล้ว)",
              f"• จำนวน: {s['trades']} ไม้",
              f"• Win rate: {s['win_rate']}%",
              f"• กำไรรวม: ${s['total']}",
@@ -1060,7 +1060,7 @@ def _help_text(cfg: dict = None) -> str:
     extras.append(f"Drawdown {cfg.get('MAX_DRAWDOWN_PCT', '10')}% → หยุดเปิดไม้ใหม่")
 
     return (
-        "🤖 คำสั่ง Part 2 (MT5 Auto-Trading)\n\n"
+        "🤖 Scalping Bot Trade by narisrpd — คำสั่งทั้งหมด\n\n"
         "/ping — 🏓 บอทยังมีชีวิต + สถานะ MT5\n"
         "/status — สถานะสด: โหมด · พอร์ต · P/L · ไม้ที่เปิด\n"
         "/scan — 🔍 สแกนตลาดทันที\n"
@@ -1097,7 +1097,7 @@ def _status_text(auto_on: bool, execute_on: bool) -> str:
         mode = "✋ Manual (กดปุ่มเอง)"
     if _is_paused():
         mode += " · ⏸️ หยุดเปิดไม้ใหม่"
-    lines = ["🤖 Part 2 — ทำงานอยู่ ✅",
+    lines = ["🤖 Scalping Bot — ทำงานอยู่ ✅",
              f"โหมด: {mode}",
              f"💼 พอร์ต: ${acc.get('balance', 0):,.2f} {acc.get('currency', '')} "
              f"(equity ${acc.get('equity', 0):,.2f})",
@@ -1138,7 +1138,7 @@ def _count_open() -> int:
 
 
 def _open_symbols() -> set:
-    """ชื่อ symbol ที่ Part 2 มีไม้เปิดอยู่ (กันเปิดซ้ำตัวเดิม)"""
+    """ชื่อ symbol ที่ Scalping Bot มีไม้เปิดอยู่ (กันเปิดซ้ำตัวเดิม)"""
     import MetaTrader5 as m5
     return {p.symbol for p in (m5.positions_get() or []) if p.magic == 260605}
 
@@ -1219,11 +1219,11 @@ def _auto_open(cfg, token, chat, t, execute_on: bool) -> bool:
 
 
 def _close_all(token, chat) -> None:
-    """ปิดไม้ Part 2 ทั้งหมดทันที (คำสั่งฉุกเฉิน /closeall)"""
+    """ปิดไม้ Scalping Bot ทั้งหมดทันที (คำสั่งฉุกเฉิน /closeall)"""
     import MetaTrader5 as m5
     poss = [p for p in (m5.positions_get() or []) if p.magic == 260605]
     if not poss:
-        tg.send_text(token, chat, "ℹ️ ไม่มีไม้ Part 2 เปิดอยู่")
+        tg.send_text(token, chat, "ℹ️ ไม่มีไม้ Scalping Bot เปิดอยู่")
         return
     ok = 0
     tot = 0.0
@@ -1258,7 +1258,7 @@ def _save_state(d: dict) -> None:
 
 
 def _count_direction(direction: str) -> int:
-    """จำนวนไม้ Part 2 ที่เปิดอยู่ในทิศเดียวกัน (กันเปิดทิศเดียวเยอะเกิน)"""
+    """จำนวนไม้ Scalping Bot ที่เปิดอยู่ในทิศเดียวกัน (กันเปิดทิศเดียวเยอะเกิน)"""
     import MetaTrader5 as m5
     want = 0 if direction == "buy" else 1
     return len([p for p in (m5.positions_get() or []) if p.magic == 260605 and p.type == want])
@@ -1276,7 +1276,7 @@ def _daily_digest_text() -> str:
     import MetaTrader5 as m5
     acc = m.account() or {}
     poss = [p for p in (m5.positions_get() or []) if p.magic == 260605]
-    lines = [f"📊 สรุปประจำวัน Part 2 · {datetime.now().strftime('%d/%m')}",
+    lines = [f"📊 สรุปประจำวัน Scalping Bot · {datetime.now().strftime('%d/%m')}",
              f"💼 พอร์ต ${acc.get('balance', 0):,.2f} (equity ${acc.get('equity', 0):,.2f})",
              f"📈 P/L วันนี้: ${journal.today_pnl():+.2f}",
              f"📂 ไม้เปิดค้าง: {len(poss)}"]
@@ -1326,7 +1326,7 @@ def main():
         log.warning("sync_config ข้าม (ไม่กระทบบอท): %s", _se)
     cfg = load()
     if not _acquire_lock():
-        log.warning("Part 2 มี instance รันอยู่แล้ว — ออก (กันรันซ้ำ)")
+        log.warning("Scalping Bot มี instance รันอยู่แล้ว — ออก (กันรันซ้ำ)")
         sys.exit(2)                         # exit code 2 = รันซ้ำ → bat จะไม่ relaunch
     token = cfg.get("TELEGRAM_BOT_TOKEN", "")
     chat = cfg.get("TELEGRAM_CHAT_ID", "")
@@ -1376,10 +1376,10 @@ def main():
     tg.set_commands(token)       # ลงเมนูคำสั่งใน Telegram
     journal.record_closed()      # seed เงียบ ๆ ตอนเริ่ม (กันรายงานไม้เก่าย้อนหลังตอนบูต)
     mode_txt = (("🔁 Auto ยิงจริง" if execute_on else "🔁 Auto ทดสอบ") if auto_on else "✋ Manual กดปุ่ม")
-    log.info("เริ่ม Part 2 · โหมด=%s · TTL=%ds · สแกนทุก%.1fนาที · maxpos=%d",
+    log.info("เริ่ม Scalping Bot · โหมด=%s · TTL=%ds · สแกนทุก%.1fนาที · maxpos=%d",
              mode_txt, ttl, scan_gap / 60, max_pos)
     tg.send_text(token, chat,
-                 f"🤖 Part 2 เริ่มทำงาน · โหมด {mode_txt} · สแกนทุก {scan_gap // 60} นาที\n"
+                 f"🤖 Scalping Bot Trade by narisrpd เริ่มทำงาน · โหมด {mode_txt} · สแกนทุก {scan_gap // 60} นาที\n"
                  "พิมพ์ /help ดูคำสั่ง · /pause หยุดชั่วคราว · /closeall ปิดไม้ทั้งหมด")
 
     # ── Drain pending Telegram messages ─────────────────────────────────────
@@ -1676,11 +1676,11 @@ def main():
             # ต่อ MT5 + แจ้งเตือนถ้าหลุด
             if not _ensure_connected(cfg):
                 if not disconnected:
-                    tg.send_text(token, chat, "⚠️ Part 2: ต่อ MT5 ไม่ได้ — หยุดชั่วคราว จะลองใหม่")
+                    tg.send_text(token, chat, "⚠️ Scalping Bot: ต่อ MT5 ไม่ได้ — หยุดชั่วคราว จะลองใหม่")
                     disconnected = True
                 time.sleep(5); continue
             if disconnected:
-                tg.send_text(token, chat, "✅ Part 2: เชื่อม MT5 กลับมาแล้ว")
+                tg.send_text(token, chat, "✅ Scalping Bot: เชื่อม MT5 กลับมาแล้ว")
                 disconnected = False
 
             acc_now = m.account() or {}
@@ -1988,7 +1988,7 @@ def main():
                     _hb_why = f"📊 ไม้เต็ม {_hb_n}/{max_pos} ไม้ — รอไม้ปิด"
                 else:
                     _hb_why = f"🔍 สแกนต่อเนื่อง · ไม้เปิด {_hb_n}/{max_pos}"
-                tg.send_text(token, chat, f"💓 Part 2 ทำงาน · {_hb_why}")
+                tg.send_text(token, chat, f"💓 Scalping Bot ทำงาน · {_hb_why}")
                 last_heartbeat = now
             _exc_streak = 0   # reset เมื่อรอบ loop สำเร็จ (ไม่มี exception)
             time.sleep(2)
@@ -2000,7 +2000,7 @@ def main():
             if _exc_streak in (3, 10, 30):      # แจ้ง Telegram เมื่อ error วนซ้ำ (3×, 10×, 30×)
                 try:
                     tg.send_text(token, chat,
-                                 f"⚠️ Part 2: loop error ซ้ำ {_exc_streak}× — {str(e)[:100]}\n"
+                                 f"⚠️ Scalping Bot: loop error ซ้ำ {_exc_streak}× — {str(e)[:100]}\n"
                                  "บอทยังรัน (retry อัตโนมัติ) ถ้าไม่กลับมาใน 5 นาที ให้ /restart")
                 except Exception:  # noqa: BLE001
                     pass

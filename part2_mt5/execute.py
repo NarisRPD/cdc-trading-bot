@@ -10,7 +10,7 @@ import time as _time
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("part2.execute")
-_MAGIC = 260605  # ป้ายระบุว่าเป็นออเดอร์ของ Part 2
+_MAGIC = 260605  # ป้ายระบุว่าเป็นออเดอร์ของ Scalping Bot
 
 
 def place_order(exsym: str, direction: str, lots: float, sl: float, tp: float,
@@ -29,7 +29,7 @@ def place_order(exsym: str, direction: str, lots: float, sl: float, tp: float,
     base = {
         "action": m5.TRADE_ACTION_DEAL, "symbol": exsym, "volume": float(lots),
         "type": order_type, "price": price, "sl": float(sl), "tp": float(tp),
-        "deviation": deviation, "magic": _MAGIC, "comment": "Part2-Bot",
+        "deviation": deviation, "magic": _MAGIC, "comment": "ScalpBot-narisrpd",
         "type_time": m5.ORDER_TIME_GTC,
     }
     # ลอง filling mode หลายแบบ (โบรกต่างกัน) — IOC → FOK → RETURN
@@ -99,7 +99,7 @@ def close_position(pos, volume: float = None) -> dict:
     otype = m5.ORDER_TYPE_SELL if is_buy else m5.ORDER_TYPE_BUY
     base = {"action": m5.TRADE_ACTION_DEAL, "symbol": pos.symbol, "volume": vol,
             "type": otype, "position": int(pos.ticket), "price": price,
-            "deviation": 30, "magic": _MAGIC, "comment": "Part2-Bot-close"}
+            "deviation": 30, "magic": _MAGIC, "comment": "ScalpBot-close"}
     for fill in (m5.ORDER_FILLING_IOC, m5.ORDER_FILLING_FOK, m5.ORDER_FILLING_RETURN):
         res = m5.order_send({**base, "type_filling": fill})
         if res is None:

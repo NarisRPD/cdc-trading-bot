@@ -1,5 +1,5 @@
 """
-part2_mt5/notify.py — ส่งข้อความเข้า Telegram (แชตเดิม) สำหรับ Part 2
+part2_mt5/notify.py — ส่งข้อความเข้า Telegram (แชตเดิม) สำหรับ Scalping Bot
 ใช้บอทตัวที่ 2 หรือบอทเดิมก็ได้ (ตั้งใน config.env)
 """
 from __future__ import annotations

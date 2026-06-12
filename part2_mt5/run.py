@@ -1,5 +1,5 @@
 """
-part2_mt5/run.py — ตัวรันหลัก Part 2
+part2_mt5/run.py — ตัวรันหลัก Scalping Bot
 
 วน: ต่อ MT5 → สแกน "สัญลักษณ์ของโบรก (Exness)" ด้วย CDC บนราคา MT5 จริง
 → ประกอบใบสั่ง (แท่งเทียน/วอลุ่ม/risk/Gemini) → ส่งที่ผ่าน (enter/small) เข้า Telegram

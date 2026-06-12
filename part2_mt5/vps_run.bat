@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  vps_run.bat - รันบอท Part 2 บน Windows VPS (24/7 always-on)
+REM  vps_run.bat - รันบอท Scalping Bot บน Windows VPS (24/7 always-on)
 REM  วางไฟล์นี้ในโฟลเดอร์ part2_mt5 บน VPS แล้วให้รันตอน logon
 REM  ต่างจากเครื่องบ้าน: VPS = สร้าง flag เอง รันตลอด ไม่ต้องกด Start
 REM  *** ติดตั้ง Python ตอน setup ให้ติ๊ก "Add Python to PATH" ***

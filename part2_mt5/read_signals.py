@@ -1,8 +1,8 @@
 """
 part2_mt5/read_signals.py — ดึงสัญญาณ CDC จาก Part 1 ผ่าน HTTPS (/signals)
 
-Part 1 (Cloud) ปล่อยสัญญาณลง GCS → cdc-bot เสิร์ฟที่ /signals → Part 2 ดึงมาใช้
-ไม่ต้องมี GCP key บนเครื่อง Part 2 (ใช้แค่ token)
+Part 1 (Cloud) ปล่อยสัญญาณลง GCS → cdc-bot เสิร์ฟที่ /signals → Scalping Bot ดึงมาใช้
+ไม่ต้องมี GCP key บนเครื่อง Scalping Bot (ใช้แค่ token)
 """
 from __future__ import annotations
 import logging

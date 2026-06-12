@@ -1,4 +1,4 @@
-# Part 2 — MT5 Trading Assistant
+# Scalping Bot Trade by narisrpd — MT5 Trading Assistant
 
 ตัวช่วยเทรดด้วย MT5 ที่ **เอาสัญญาณจาก Part 1 (CDC Action Zone)** มาประกอบการเทรด
 \+ เทคนิคแท่งเทียน/ทรงกราฟ + Risk Management ขั้นสูง → ออก **"ใบสั่งเทรด"** ให้
@@ -7,7 +7,7 @@
 ## หลักการแยก Part
 
 ```
-Part 1 (Cloud Run, ไม่แตะ)            Part 2 (เครื่อง Windows นี้)
+Part 1 (Cloud Run, ไม่แตะ)            Scalping Bot (เครื่อง Windows นี้)
 ─────────────────────────            ──────────────────────────────
 สแกน CDC → ปล่อยสัญญาณ                1. ดึงสัญญาณจาก /signals
 ที่ /signals (HTTPS + token)   ─────▶ 2. + แท่งเทียน/ทรงกราฟ (ยืนยัน)
@@ -15,7 +15,7 @@ Part 1 (Cloud Run, ไม่แตะ)            Part 2 (เครื่อง 
                                       4. ต่อ MT5 (อ่านราคา/สเปก/บัญชี)
                                       5. → ใบสั่งเทรด → Telegram → กดเอง
 ```
-Part 1 **ไม่รู้จัก Part 2** เลย ถ้าลบ Part 2 ทิ้ง Part 1 ทำงานปกติ 100%
+Part 1 **ไม่รู้จัก Scalping Bot** เลย ถ้าลบ Scalping Bot ทิ้ง Part 1 ทำงานปกติ 100%
 
 ## ติดตั้ง (ครั้งแรก)
 

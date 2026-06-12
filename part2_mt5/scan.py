@@ -1,5 +1,5 @@
 """
-part2_mt5/scan.py — Part 2 สแกนสัญลักษณ์ของ "โบรก (Exness)" เอง บนข้อมูล MT5 จริง
+part2_mt5/scan.py — Scalping Bot สแกนสัญลักษณ์ของ "โบรก (Exness)" เอง บนข้อมูล MT5 จริง
 
 ใช้ตรรกะ CDC ของ Part 1 (core.signals.compute_signal) มาคำนวณ — reuse ไม่เขียนซ้ำ
 *** สแกนเฉพาะสัญลักษณ์ที่โบรกมี เท่านั้น — ไม่ไปแตะสินทรัพย์นอกโบรก ***
@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 
-# ให้ import core.* ของ Part 1 ได้ (Part 2 → ใช้ pure functions ของ Part 1, ทางเดียว)
+# ให้ import core.* ของ Part 1 ได้ (Scalping Bot → ใช้ pure functions ของ Part 1, ทางเดียว)
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
