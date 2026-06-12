@@ -85,6 +85,7 @@ def set_commands(token: str) -> None:
         {"command": "stats",    "description": "สถิติผลเทรด (win rate · profit factor)"},
         {"command": "insights", "description": "บทเรียน: เทคนิคไหนได้เงินจริง (บอทเรียนรู้)"},
         {"command": "export",   "description": "ส่งออกข้อมูลเทรด (CSV/JSONL) ไปเทรน AI ภายนอก"},
+        {"command": "shadow",   "description": "สถานะกลยุทธ์ช่วงทดลองงาน (paper trade)"},
         {"command": "pause",    "description": "หยุดเปิดไม้ใหม่ชั่วคราว (auto)"},
         {"command": "resume",   "description": "กลับมาเปิดไม้อัตโนมัติ"},
         {"command": "closeall", "description": "ปิดไม้ Part 2 ทั้งหมดทันที (ฉุกเฉิน)"},

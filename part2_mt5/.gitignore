@@ -10,6 +10,7 @@ config.env
 config.env.*
 part2_pairs.json
 part2_state.json
+part2_shadow.json
 part2_trades_export.csv
 part2_trades_export.jsonl
 part2_trade_meta.json

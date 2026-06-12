@@ -28,6 +28,7 @@ import journal
 import learn
 import news_guard
 import market_hours
+import shadow
 from run import _watchlist
 
 # ── Logging: Python จัดการ rotation เอง (เก็บ log ย้อนหลัง N วัน · เก่ากว่าลบอัตโนมัติ) ──
@@ -1066,6 +1067,7 @@ def _help_text(cfg: dict = None) -> str:
         "/stats — สถิติสะสม (win rate · profit factor)\n"
         "/insights — 🧠 เทคนิคไหนได้เงินจริง (เรียนรู้จากผลจริง)\n"
         "/export [csv|jsonl] — 📊 ส่งออกข้อมูลเทรด\n"
+        "/shadow — 🧪 สถานะกลยุทธ์ช่วงทดลองงาน (paper trade)\n"
         "/pause · /resume — ⏸️▶️ หยุด/เริ่มเปิดไม้ใหม่\n"
         "/reset_daily — 🔄 รีเซ็ตโควต้าขาดทุนวัน\n"
         "/closeall — 🧹 ปิดไม้ทั้งหมด (ฉุกเฉิน)\n"
@@ -1363,6 +1365,7 @@ def main():
     _state = _load_state()
     peak_eq = float(_state.get("peak_eq", 0) or 0)
     accept = {x.strip() for x in cfg.get("GEMINI_ACCEPT", "enter,small").split(",") if x.strip()}
+    _shadow_srcs = shadow.shadow_set(cfg)   # 🧪 กลยุทธ์ช่วงทดลองงาน — สแกนแต่ไม่ยิงเงินจริง
     finnhub = cfg.get("FINNHUB_API_KEY", "")
     blackout_min = int(cfg.get("BLACKOUT_MIN", "30"))
     max_daily_loss = float(cfg.get("MAX_DAILY_LOSS_PCT", "4.0"))
@@ -1483,6 +1486,8 @@ def main():
                         except Exception:  # noqa: BLE001
                             pass
                         tg.send_text(token, chat, learn.edge_report())
+                    elif cmd == "shadow":
+                        tg.send_text(token, chat, shadow.report_text(cfg))
                     elif cmd == "export":
                         # /export [csv|jsonl] — ส่งออกข้อมูลเทรน AI เป็นไฟล์เข้า Telegram
                         try:
@@ -1721,6 +1726,11 @@ def main():
                     learn.attach_outcomes()   # จับคู่ผลลัพธ์เข้าฟีเจอร์ (closed-loop เรียนรู้)
                 except Exception:  # noqa: BLE001
                     pass
+                # shadow: ตัดสิน paper trades จากราคาจริง + แจ้งเลื่อนขั้น/ตกทดลองงาน
+                try:
+                    shadow.process(m, cfg, token, chat, tg)
+                except Exception:  # noqa: BLE001
+                    pass
                 last_journal = now
 
             # 2.65) สรุปประจำวัน + เช็กสินทรัพย์ใหม่ที่โบรกเพิ่ม (ครั้งเดียว/วัน)
@@ -1891,6 +1901,10 @@ def main():
                                 _touch_recent(key, now + scan_gap)   # กัน re-scan รอบถัดมาทันที
                                 continue
                             _touch_recent(key, now)
+                            if (bias.get("source") or "").lower() in _shadow_srcs:
+                                shadow.record(t)              # 🧪 ทดลองงาน — paper trade ไม่ยิงจริง
+                                scan_res.append((sym, dr, "skip", "🧪 shadow (paper)"))
+                                continue
                             if _auto_open(cfg, token, chat, t, execute_on):
                                 opened.add(sym)
                                 scan_res.append((sym, dr, "open", _strat_tags(t)))
@@ -1931,6 +1945,10 @@ def main():
                             t = tk.build_ticket(bias["symbol"], bias, acc_now, cfg, m, part1_hint=hint,
                                                 scalp=bias.get("scalp"))
                             if not t or t.get("skipped") or t["verdict"].get("decision") not in accept:
+                                continue
+                            if (bias.get("source") or "").lower() in _shadow_srcs:
+                                shadow.record(t)              # 🧪 ทดลองงาน — ไม่เสนอใบจริง
+                                _touch_recent(key, now)
                                 continue
                             tid = f"t{counter}"; counter += 1
                             text = tk.format_ticket(t) + f"\n\n⏳ ตอบใน {ttl // 60} นาที ไม่งั้นใบสั่งจะหายไป"
