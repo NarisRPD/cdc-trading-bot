@@ -157,7 +157,11 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
     multi_min_r    = float(cfg.get("MULTI_EXIT_MIN_R", "0.3"))     # min R ก่อนเช็ค (กันออกเร็วหลังเพิ่งเข้า)
     multi_tf       = cfg.get("MULTI_EXIT_TF", "M15")               # TF ตรวจ SuperTrend flip
 
-    # 0) TP ก่อนตลาดปิด — ปิดไม้ที่ตลาดใกล้ปิด ถ้า "ไม้กำไร" หรือ "พอร์ตวันนี้เขียว" (ไม่รวม crypto)
+    # 0) Flat ก่อนตลาดปิด — ปิดไม้ที่ตลาดใกล้ปิด (ไม่รวม crypto)
+    # ⚠️ กฎ "ขาดทุนไม่ปิด" ถูกยกเลิกโดยผู้ใช้ 12 มิ.ย. 2026 จากหลักฐาน 134 ไม้:
+    #   ไม้กำไรโดนปิดก่อนตลาดปิดเฉลี่ย +0.8R แต่ไม้ขาดทุนถือข้ามคืนโดน gap -1.9 ถึง -2.8R
+    #   (GOOGL -2.76R/18ชม. · NKE -1.96R/22ชม. · INTC -1.93R/15ชม.) = ตัดกำไร-เลี้ยงขาดทุน
+    # → ดีฟอลต์ใหม่: flat ทุกไม้ทั้งกำไร/ขาดทุน (CLOSE_ALL_BEFORE_MARKET_CLOSE=false เพื่อกลับพฤติกรรมเดิม)
     if cfg.get("CLOSE_BEFORE_MARKET_CLOSE", "true").lower() in ("1", "true", "yes", "on"):
         import market_hours
         buf = int(cfg.get("MARKET_CLOSE_BUFFER_MIN", "20"))
@@ -165,13 +169,13 @@ def manage_positions(cfg: dict, balance: float = 0) -> None:
         if closing:
             import journal
             day_pnl = journal.today_pnl()
-            # กฎผู้ใช้: "ขาดทุนไม่ต้องปิด · กำไรปิดได้" → ดีฟอลต์ปิดเฉพาะไม้กำไร
-            # ไม้ขาดทุนปิดก่อนตลาดปิดก็ต่อเมื่อเปิด CLOSE_LOSERS_ON_GREEN_DAY=true + วันเขียว
+            _close_all = cfg.get("CLOSE_ALL_BEFORE_MARKET_CLOSE", "true").lower() in ("1", "true", "yes", "on")
+            # โหมดเดิม (CLOSE_ALL=false): ปิดเฉพาะไม้กำไร · ไม้ขาดทุนปิดเฉพาะวันเขียว+เปิด flag
             _close_loser_green = cfg.get("CLOSE_LOSERS_ON_GREEN_DAY", "false").lower() in ("1", "true", "yes", "on")
             for p in closing:
-                if p.profit > 0 or (_close_loser_green and day_pnl > 0):
+                if _close_all or p.profit > 0 or (_close_loser_green and day_pnl > 0):
                     if execute.close_position(p).get("ok"):
-                        log.info("🔔 ตลาดใกล้ปิด → ปิด %s (ไม้ $%.2f · พอร์ตวันนี้ $%.2f)",
+                        log.info("🔔 ตลาดใกล้ปิด → flat %s (ไม้ $%.2f · พอร์ตวันนี้ $%.2f)",
                                  p.symbol, p.profit, day_pnl)
                         _state.pop(p.ticket, None)
             poss = m5.positions_get() or ()
