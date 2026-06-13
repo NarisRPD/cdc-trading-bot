@@ -19,7 +19,7 @@ from core.signals import Signal, compute_signal, zone_label
 from data.commodities import COMMODITIES, fetch_commodities
 from data.crypto import fetch_crypto_universe, fetch_ohlcv_daily
 from data.stocks import fetch_stocks_batch
-from notify.telegram import send_telegram
+from notify.telegram import send_telegram as _send_telegram_raw
 from universe.set100 import get_set100_tickers, strip_bk_suffix
 from universe.sp500 import get_sp500_tickers
 from universe.nasdaq100 import get_nasdaq100_tickers
@@ -41,6 +41,28 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger("main")
+
+
+# ─── ปิดแจ้งเตือนเชิงรุกวันเสาร์-อาทิตย์ (คำขอผู้ใช้ · อ้างอิงเวลาไทย) ──────────
+# การส่ง Telegram ทุกชนิดใน main.py (สแกน CDC · ข่าว · โซน · บรีฟเช้า · รีวิวสัปดาห์)
+# ผ่าน send_telegram ตัวนี้จุดเดียว → เงียบครบทุกอย่างในวันหยุดสุดสัปดาห์
+# คุมด้วย env ALERTS_SKIP_WEEKEND (ดีฟอลต์เปิด) · ตั้ง false เพื่อกลับมาแจ้งทุกวัน
+# ไม่กระทบ bot.py (ตอบคำสั่งที่ผู้ใช้พิมพ์เอง) และ signals_export (สะพาน Part 2 ยังทำงาน)
+def _is_weekend_bkk() -> bool:
+    """True ถ้าตอนนี้เป็นเสาร์(5)/อาทิตย์(6) ตามเวลาไทย (Asia/Bangkok)"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("Asia/Bangkok")).weekday() >= 5
+
+
+def send_telegram(msg: str, **kwargs) -> bool:
+    """ห่อ sender จริง: ข้ามการส่งวันเสาร์-อาทิตย์ · วันธรรมดาส่งปกติ"""
+    if (os.getenv("ALERTS_SKIP_WEEKEND", "true").strip().lower() in ("1", "true", "yes", "on")
+            and _is_weekend_bkk()):
+        log.info("ข้ามแจ้งเตือน — เสาร์/อาทิตย์ (ALERTS_SKIP_WEEKEND) · %.50s",
+                 (msg or "").replace("\n", " "))
+        return True   # ถือว่าสำเร็จ — ตัวเรียกจะได้ไม่นับ fail/ไม่ retry
+    return _send_telegram_raw(msg, **kwargs)
 
 
 @dataclass
