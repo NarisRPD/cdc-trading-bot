@@ -6,7 +6,8 @@ data/ai.py — ตัวกลางเรียก Gemini สำหรับง
 - ห้ามให้แต่งข้อมูล/ทำนายราคา · ทุกคำตอบมี disclaimer ฝั่ง caller
 - บอทยังเป็น record/alert ไม่ auto-trade
 
-แชร์ key/model/fallback เดียวกับ translate (gemini-2.5-flash → flash-latest)
+แชร์ key/model/fallback เดียวกับ translate (gemini-2.5-flash-lite → flash-latest · ถูกกว่า ~3x)
+override ได้ด้วย env GEMINI_MODEL (เช่นกลับเป็น gemini-2.5-flash ถ้าต้องการคุณภาพสูงขึ้น)
 """
 from __future__ import annotations
 import json
@@ -17,7 +18,7 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip() or "gemini-2.5-flash-lite"
 _FALLBACK_MODEL = "gemini-flash-latest"
 _NEWS_AI_CACHE = "news_ai_cache.json"
 _NEWS_AI_KEEP_DAYS = 30
