@@ -165,6 +165,7 @@ def fetch_stocks_batch(
     if missing:
         log.info("yfinance ขาด %d ตัว → ลอง Stooq fallback", len(missing))
         recovered = 0
+        recovered_syms: List[str] = []
         consecutive_fail = 0
         # ถ้า Stooq พังติดกันเกินเกณฑ์ = endpoint ใช้ไม่ได้ → เลิกลองที่เหลือทันที
         stooq_fail_limit = 5
@@ -179,10 +180,18 @@ def fetch_stocks_batch(
             if df is not None and len(df) >= 60:
                 results[t] = df
                 recovered += 1
+                recovered_syms.append(t)
                 consecutive_fail = 0
             else:
                 consecutive_fail += 1
         log.info("Stooq recovered: %d / %d", recovered, len(missing))
+        # B3) Stooq ใช้ raw close (ไม่ปรับ split/dividend) ต่างจาก yfinance auto_adjust=True
+        # → หุ้นปันผลสูงอาจเกิด discontinuity ณ ex-dividend = สัญญาณปลอม · log ไว้ debug ได้
+        if recovered_syms:
+            log.warning(
+                "⚠️ %d ตัวมาจาก Stooq (raw close ไม่ปรับปันผล/แตกพาร์ — สเกลอาจต่างจาก yfinance ระวังสัญญาณ ex-div): %s",
+                len(recovered_syms), ", ".join(recovered_syms[:30]),
+            )
 
     log.info("fetch_stocks_batch: %d ตัวสำเร็จ จากที่ขอ %d ตัว",
              len(results), len(tickers))

@@ -77,6 +77,11 @@ class Config:
     # ── Reversal watch (หุ้นใกล้กลับตัว 🔵/🟠 — ดักก่อนสัญญาณ, ข้าม hard filters) ──
     enable_reversal_watch: bool = True   # โชว์ section "ใกล้กลับตัว" ใน /scan
     reversal_max: int = 6                # จำกัดต่อทิศ (เรียงตาม RS) — block เต็มยาว กันท่วม
+    reversal_fresh_only: bool = True     # True = เฉพาะ "เพิ่งเข้าโซนกลับตัว" (กันเตือนตัวเดิมซ้ำทุกวัน)
+
+    # ── Data staleness guard (กันยิงสัญญาณบนราคาค้าง/feed ล่ม) ──
+    max_stale_days_crypto: int = 3       # crypto: แท่งล่าสุดเก่ากว่านี้ (วัน) = ค้าง → ตัด
+    max_stale_days_equity: int = 6       # หุ้น/ทอง: เผื่อสุดสัปดาห์ + วันหยุดยาว
 
     # ── Sideway filter (กันแนะนำตัวไร้เทรนด์ — สมดุล: ADX ต่ำ + MA150 แบน, เก็บ early-trend) ──
     filter_sideway: bool = True          # ตัด sideway ออกจากหมวดใกล้กลับตัว
@@ -138,6 +143,9 @@ def load_config() -> Config:
         enable_fundamentals=_get_bool("ENABLE_FUNDAMENTALS", True),
         enable_reversal_watch=_get_bool("ENABLE_REVERSAL", True),
         reversal_max=_get_int("REVERSAL_MAX", 6),
+        reversal_fresh_only=_get_bool("REVERSAL_FRESH_ONLY", True),
+        max_stale_days_crypto=_get_int("MAX_STALE_DAYS_CRYPTO", 3),
+        max_stale_days_equity=_get_int("MAX_STALE_DAYS_EQUITY", 6),
         filter_sideway=_get_bool("FILTER_SIDEWAY", True),
         sideway_adx_max=_get_float("SIDEWAY_ADX_MAX", 20.0),
         enable_option_liquidity=_get_bool("ENABLE_OPTION_LIQUIDITY", True),

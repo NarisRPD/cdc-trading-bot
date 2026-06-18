@@ -75,6 +75,9 @@ class GroupResult:
     bar_date: pd.Timestamp | None
     regime_note: str = ""  # สถานะตลาดรวม (ดัชนีเหนือ/ใต้ EMA200)
     reversal: List[Signal] = field(default_factory=list)  # หุ้นโซน 🔵/🟠 ใกล้กลับตัว
+    stale: int = 0         # จำนวนตัวที่ตัดเพราะข้อมูลค้าง (B1)
+    fetch_failed: int = 0  # จำนวนตัวที่ดึงข้อมูลไม่ได้ (B2 — แยกจาก "ไม่มีสัญญาณ")
+    universe: int = 0      # ขนาด universe ที่ขอดึง (B2 — คำนวณสัดส่วน blind)
 
 
 # ─── per-group runners ────────────────────────────────────────────────
@@ -137,24 +140,46 @@ def _compute_for(df, sym: str, name: str, cfg: Config, **extra):
     )
 
 
+def _pick_reversal(signals: List[Signal], cfg: Config) -> List[Signal]:
+    """หุ้นโซน 🔵/🟠 ใกล้กลับตัว — ถ้า reversal_fresh_only เอาเฉพาะ "เพิ่งเข้าโซน"
+    (แท่งก่อนหน้าไม่ได้อยู่ในโซนกลับตัว) กันเตือนตัวเดิมซ้ำทุกวัน (C4)"""
+    rev = [s for s in signals if s.zone in ("blue", "orange")]
+    if cfg.reversal_fresh_only:
+        rev = [s for s in rev if (s.prev_zone or "") not in ("blue", "orange")]
+    return rev
+
+
 def _eval_dataframes(
     items: Dict[str, pd.DataFrame],
     cfg: Config,
     display_name_fn: Callable[[str], str] = lambda s: s,
-) -> Tuple[List[Signal], int, int]:
-    """รัน compute_signal ทั่ว dict; คืน (สัญญาณทั้งหมด, ok, skipped) + ติด RS rank"""
+    stale_days: Optional[int] = None,
+) -> Tuple[List[Signal], int, int, int]:
+    """รัน compute_signal ทั่ว dict; คืน (สัญญาณ, ok, skipped, stale) + ติด RS rank
+    stale_days: ถ้า bar_date เก่ากว่านี้ (วัน) = ข้อมูลค้าง → ตัดทิ้ง (B1) · None = ไม่เช็ก"""
     signals: List[Signal] = []
-    ok = skipped = 0
+    ok = skipped = stale = 0
+    today = pd.Timestamp.now(tz="UTC").normalize().tz_localize(None)
     for sym, df in items.items():
         sig = _compute_for(df, sym, display_name_fn(sym), cfg)
         if sig is None:
             skipped += 1
             log.debug("skip %s — data not sufficient", sym)
             continue
+        if stale_days is not None and sig.bar_date is not None:
+            try:
+                age = (today - pd.Timestamp(sig.bar_date).normalize()).days
+            except Exception:  # noqa: BLE001
+                age = 0
+            if age > stale_days:
+                stale += 1
+                log.warning("skip %s — ข้อมูลค้าง %d วัน (เกิน %d) bar=%s",
+                            sym, age, stale_days, sig.bar_date.date())
+                continue
         ok += 1
         signals.append(sig)
     _attach_relative_strength(signals, items, cfg)
-    return signals, ok, skipped
+    return signals, ok, skipped, stale
 
 
 def _enrich_reversal(
@@ -232,17 +257,18 @@ def run_crypto(cfg: Config) -> GroupResult:
             continue
         items[sym] = df
 
-    signals, ok, skipped_signal = _eval_dataframes(items, cfg)
+    signals, ok, skipped_signal, stale = _eval_dataframes(items, cfg, stale_days=cfg.max_stale_days_crypto)
     buys = [s for s in signals if s.signal == "buy"]
     sells = [s for s in signals if s.signal == "sell"]
-    reversal = [s for s in signals if s.zone in ("blue", "orange")]  # ใกล้กลับตัว
+    reversal = _pick_reversal(signals, cfg)  # ใกล้กลับตัว (C4: เฉพาะเพิ่งเข้าโซน)
     if cfg.enable_reversal_watch:
         reversal = _enrich_reversal(reversal, items, cfg)
     bar = max((s.bar_date for s in signals), default=None)
-    log.info("Crypto: scanned=%d, skipped(fetch)=%d, skipped(data)=%d, buy=%d, sell=%d",
-             ok, skipped_fetch, skipped_signal, len(buys), len(sells))
+    log.info("Crypto: scanned=%d, skipped(fetch)=%d, skipped(data)=%d, stale=%d, buy=%d, sell=%d",
+             ok, skipped_fetch, skipped_signal, stale, len(buys), len(sells))
     regime = _regime_note("crypto", "BTC/USDT", "Crypto (BTC)") if cfg.enable_regime else ""
-    return GroupResult("Crypto", ok, skipped_fetch + skipped_signal, buys, sells, bar, regime, reversal)
+    return GroupResult("Crypto", ok, skipped_fetch + skipped_signal + stale, buys, sells, bar, regime, reversal,
+                       stale=stale, fetch_failed=skipped_fetch, universe=len(symbols))
 
 
 def run_us_stocks(cfg: Config) -> GroupResult:
@@ -253,54 +279,60 @@ def run_us_stocks(cfg: Config) -> GroupResult:
     ))
     log.info("US universe รวม %d ตัว (dedup แล้ว)", len(tickers))
     items = fetch_stocks_batch(tickers, period="2y")
-    signals, ok, skipped = _eval_dataframes(items, cfg)
+    signals, ok, skipped, stale = _eval_dataframes(items, cfg, stale_days=cfg.max_stale_days_equity)
     buys = [s for s in signals if s.signal == "buy"]
     sells = [s for s in signals if s.signal == "sell"]
-    reversal = [s for s in signals if s.zone in ("blue", "orange")]  # ใกล้กลับตัว
+    reversal = _pick_reversal(signals, cfg)  # ใกล้กลับตัว (C4: เฉพาะเพิ่งเข้าโซน)
     if cfg.enable_reversal_watch:
         reversal = _enrich_reversal(reversal, items, cfg)
     bar = max((s.bar_date for s in signals), default=None)
-    log.info("US Stocks: scanned=%d, skipped=%d, buy=%d, sell=%d",
-             ok, len(tickers) - ok, len(buys), len(sells))
+    fetch_failed = len(tickers) - len(items)
+    log.info("US Stocks: scanned=%d, fetch_failed=%d, stale=%d, buy=%d, sell=%d",
+             ok, fetch_failed, stale, len(buys), len(sells))
     regime = _regime_note("us", "^GSPC", "US (S&P500)") if cfg.enable_regime else ""
-    return GroupResult("US Stocks", ok, len(tickers) - ok, buys, sells, bar, regime, reversal)
+    return GroupResult("US Stocks", ok, len(tickers) - ok, buys, sells, bar, regime, reversal,
+                       stale=stale, fetch_failed=fetch_failed, universe=len(tickers))
 
 
 def run_thai_stocks(cfg: Config) -> GroupResult:
     log.info("=== Thai Stocks (SET100) ===")
     tickers = get_set100_tickers()
     items = fetch_stocks_batch(tickers, period="2y")
-    signals, ok, skipped = _eval_dataframes(
-        items, cfg, display_name_fn=strip_bk_suffix,
+    signals, ok, skipped, stale = _eval_dataframes(
+        items, cfg, display_name_fn=strip_bk_suffix, stale_days=cfg.max_stale_days_equity,
     )
     buys = [s for s in signals if s.signal == "buy"]
     sells = [s for s in signals if s.signal == "sell"]
-    reversal = [s for s in signals if s.zone in ("blue", "orange")]  # ใกล้กลับตัว
+    reversal = _pick_reversal(signals, cfg)  # ใกล้กลับตัว (C4: เฉพาะเพิ่งเข้าโซน)
     if cfg.enable_reversal_watch:
         reversal = _enrich_reversal(reversal, items, cfg)
     bar = max((s.bar_date for s in signals), default=None)
-    log.info("Thai Stocks: scanned=%d, skipped=%d, buy=%d, sell=%d",
-             ok, len(tickers) - ok, len(buys), len(sells))
+    fetch_failed = len(tickers) - len(items)
+    log.info("Thai Stocks: scanned=%d, fetch_failed=%d, stale=%d, buy=%d, sell=%d",
+             ok, fetch_failed, stale, len(buys), len(sells))
     regime = _regime_note("thai", "^SET.BK", "ไทย (SET)") if cfg.enable_regime else ""
-    return GroupResult("Thai Stocks", ok, len(tickers) - ok, buys, sells, bar, regime, reversal)
+    return GroupResult("Thai Stocks", ok, len(tickers) - ok, buys, sells, bar, regime, reversal,
+                       stale=stale, fetch_failed=fetch_failed, universe=len(tickers))
 
 
 def run_commodities(cfg: Config) -> GroupResult:
     log.info("=== Commodities ===")
     items = fetch_commodities()
-    signals, ok, skipped = _eval_dataframes(
-        items, cfg, display_name_fn=lambda s: COMMODITIES.get(s, s),
+    signals, ok, skipped, stale = _eval_dataframes(
+        items, cfg, display_name_fn=lambda s: COMMODITIES.get(s, s), stale_days=cfg.max_stale_days_equity,
     )
     buys = [s for s in signals if s.signal == "buy"]
     sells = [s for s in signals if s.signal == "sell"]
-    reversal = [s for s in signals if s.zone in ("blue", "orange")]  # ใกล้กลับตัว
+    reversal = _pick_reversal(signals, cfg)  # ใกล้กลับตัว (C4: เฉพาะเพิ่งเข้าโซน)
     if cfg.enable_reversal_watch:
         reversal = _enrich_reversal(reversal, items, cfg)
     bar = max((s.bar_date for s in signals), default=None)
-    log.info("Commodities: scanned=%d, skipped=%d, buy=%d, sell=%d",
-             ok, len(COMMODITIES) - ok, len(buys), len(sells))
+    fetch_failed = len(COMMODITIES) - len(items)
+    log.info("Commodities: scanned=%d, fetch_failed=%d, stale=%d, buy=%d, sell=%d",
+             ok, fetch_failed, stale, len(buys), len(sells))
     regime = _regime_note("commodity", "GC=F", "ทองคำ") if cfg.enable_regime else ""
-    return GroupResult("Commodities", ok, len(COMMODITIES) - ok, buys, sells, bar, regime, reversal)
+    return GroupResult("Commodities", ok, len(COMMODITIES) - ok, buys, sells, bar, regime, reversal,
+                       stale=stale, fetch_failed=fetch_failed, universe=len(COMMODITIES))
 
 
 # ─── message formatting ───────────────────────────────────────────────
@@ -853,13 +885,19 @@ def build_messages(results: List[GroupResult], cfg: Config) -> List[str]:
         messages.extend(rev_msgs)  # 🔵 ใกล้กลับขึ้น / 🟠 ใกล้กลับลง (คนละข้อความ)
 
     if not messages:
-        # แจ้งสถานะแม้ไม่มีสัญญาณ
+        # แจ้งสถานะแม้ไม่มีสัญญาณ — แยก "ดึงข้อมูลไม่ได้" ออกจาก "ไม่มีสัญญาณ" (B2)
         total_scanned = sum(r.scanned for r in results)
-        total_skipped = sum(r.skipped for r in results)
+        total_failed = sum(r.fetch_failed for r in results)
+        total_stale = sum(r.stale for r in results)
         kind = "คุณภาพสูง (HIGH-QUALITY)" if cfg.alert_high_quality_only else "Buy/Sell ใหม่"
+        extra = ""
+        if total_failed:
+            extra += f"\n⚠️ ดึงข้อมูลไม่ได้ {total_failed} ตัว (อาจไม่ใช่ 'ตลาดเงียบจริง')"
+        if total_stale:
+            extra += f"\n⚠️ ข้อมูลค้าง {total_stale} ตัว (ถูกตัดออก)"
         messages.append(
             f"ℹ️ CDC Scanner — ไม่มีสัญญาณ{kind}ในวันนี้\n"
-            f"สแกน {total_scanned} ตัว / ข้าม {total_skipped} ตัว\n"
+            f"สแกนได้ {total_scanned} ตัว{extra}\n"
             f"📅 อ้างอิงแท่งปิดวันที่: {ref_date}"
         )
 
@@ -877,6 +915,14 @@ def build_messages(results: List[GroupResult], cfg: Config) -> List[str]:
                 messages.insert(0, mw)
         except Exception as e:  # noqa: BLE001
             log.warning("macro warning failed: %s", e)
+
+    # B2) เตือน "ข้อมูลไม่ครบ" บนสุด — กันเข้าใจผิดว่า 'ตลาดเงียบ' ทั้งที่ดึงข้อมูลไม่ได้
+    blind = [r for r in results if r.universe > 0 and r.fetch_failed / r.universe > 0.5]
+    if blind:
+        warn = "⚠️ ข้อมูลไม่ครบ — ดึงไม่ได้เกินครึ่ง ผลอาจไม่สมบูรณ์:\n" + "\n".join(
+            f"• {r.group_name}: ดึงได้ {r.universe - r.fetch_failed}/{r.universe}" for r in blind
+        )
+        messages.insert(0, warn)
     return messages
 
 
