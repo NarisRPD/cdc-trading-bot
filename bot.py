@@ -149,6 +149,22 @@ def _resolve_forced(group_key: str, raw: str) -> Resolved:
     return Resolved("commodity", s, s)
 
 
+def _resolve_cmd_symbol(args: list[str]):
+    """resolve args[0] → Resolved · ถ้ามี keyword ตลาด (us/thai/crypto/commodity) ใน args
+    บังคับตลาดนั้น (กันหุ้น US โดนเดาเป็น crypto) · คืน (Resolved, args ที่ตัด keyword ออกแล้ว)"""
+    sym = args[0]
+    forced = None
+    rest = [sym]
+    for a in args[1:]:
+        g = _SCAN_ALIASES.get(a.lower())
+        if g and forced is None:
+            forced = g                       # keyword ตลาดตัวแรกที่เจอ (หลัง symbol)
+        else:
+            rest.append(a)
+    resolved = _resolve_forced(forced, sym) if forced else resolve_symbol(sym)
+    return resolved, rest
+
+
 def _confidence(s) -> str:
     """ระดับความเชื่อมั่นจาก score + weekly (ใช้ทั้งกรณีมีสัญญาณและอ่านจากโซน)"""
     if s.high_quality and s.mtf_aligned is True:
@@ -385,11 +401,11 @@ def _handle_open(cmd: str, args: list[str]) -> str:
     is_option = side in ("call", "put")
     if not args:
         if is_option:
-            return f"ใช้: /{cmd} SYMBOL [strike] [ราคาหุ้น]\nเช่น /{cmd} CLX 80 89"
-        return f"ใช้: /{cmd} SYMBOL [ราคาเข้า]\nเช่น /{cmd} SOL 150"
+            return f"ใช้: /{cmd} SYMBOL [ตลาด] [strike] [ราคาหุ้น]\nเช่น /{cmd} CLX 80 89 · ระบุตลาด /{cmd} CLX us 80 89"
+        return f"ใช้: /{cmd} SYMBOL [ตลาด] [ราคาเข้า]\nเช่น /{cmd} SOL 150 · ระบุตลาด /{cmd} SOFI us"
     try:
-        resolved = resolve_symbol(args[0])
-    except ValueError:
+        resolved, args = _resolve_cmd_symbol(args)
+    except (ValueError, KeyError):
         return "❌ ไม่เข้าใจ symbol"
 
     if is_option:
@@ -538,10 +554,10 @@ def _open_option(cmd: str, side: str, resolved, args: list[str]) -> str:
 def _handle_close(cmd: str, args: list[str]) -> str:
     side = _CLOSE[cmd]
     if not args:
-        return f"ใช้: /{cmd} SYMBOL"
+        return f"ใช้: /{cmd} SYMBOL [ตลาด]"
     try:
-        resolved = resolve_symbol(args[0])
-    except ValueError:
+        resolved, args = _resolve_cmd_symbol(args)
+    except (ValueError, KeyError):
         return "❌ ไม่เข้าใจ symbol"
 
     removed = store.remove_position(resolved.data_ticker, side)
@@ -1159,14 +1175,16 @@ def _handle_list() -> str:
 _HELP = (
     "🤖 CDC Watchlist Bot\n\n"
     "เปิดสถานะ:\n"
-    "• /buy SYM [ราคา] — ซื้อ Spot\n"
-    "• /callbuy SYM strike [วันหมดอายุ] [premium] — เปิด Call\n"
-    "• /putbuy SYM strike [วันหมดอายุ] [premium] — เปิด Put\n"
-    "   ใส่วันหมดอายุ → ติดตาม premium จริง เช่น /putbuy LDOS 115 17/07 4.20\n\n"
+    "• /buy SYM [ตลาด] [ราคา] — ซื้อ Spot\n"
+    "• /callbuy SYM [ตลาด] strike [วันหมดอายุ] [premium] — เปิด Call\n"
+    "• /putbuy SYM [ตลาด] strike [วันหมดอายุ] [premium] — เปิด Put\n"
+    "   ใส่วันหมดอายุ → ติดตาม premium จริง เช่น /putbuy LDOS 115 17/07 4.20\n"
+    "   ระบุตลาดกัน resolve ผิด (หุ้น US ไปโดน crypto): us / thai / crypto / commodity\n"
+    "   เช่น /buy SOFI us · /callbuy LDOS us 115 17/07\n\n"
     "ปิดสถานะ (เอาออกจาก watchlist):\n"
-    "• /sell SYM — ปิด Spot\n"
-    "• /callsell SYM — ปิด Call\n"
-    "• /putsell SYM — ปิด Put\n\n"
+    "• /sell SYM [ตลาด] — ปิด Spot\n"
+    "• /callsell SYM [ตลาด] — ปิด Call\n"
+    "• /putsell SYM [ตลาด] — ปิด Put\n\n"
     "จัดการ:\n"
     "• /list — ดูทุกตัว + %P/L + โซน + SL/TP\n"
     "• /scan — สแกนทั้ง 4 กลุ่ม | /scan crypto|usstocks|thaistocks|commodity\n"
