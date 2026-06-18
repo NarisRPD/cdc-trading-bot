@@ -294,13 +294,19 @@ def compute_signal(
             ok = ratio is not None and ratio >= 1.5             # ดาว = breakout แรง (discriminating)
             if ok:
                 score += 1
-            if ok:
+            if ratio is None:               # vol เฉลี่ย=0 = ไม่มีฐานเทียบ → ไม่ตัดสิน (text/note ตรงกัน)
+                text = "ข้อมูลปริมาณไม่พอ (ไม่มีฐาน SMA20)"
+                note = "vol_no_base"
+            elif ok:
                 text = f"ปริมาณซื้อขาย {ratio:.1f}× SMA20 (breakout แรง)"
-            elif above and ratio is not None:
+                note = "vol>=1.5xSMA20"
+            elif above:
                 text = f"ปริมาณซื้อขาย {ratio:.1f}× SMA20 (เหนือค่าเฉลี่ยแต่ยังไม่ breakout)"
+                note = "vol>SMA20"
             else:
                 text = "ปริมาณซื้อขายต่ำกว่า SMA20"
-            notes.append("vol>=1.5xSMA20" if ok else ("vol>SMA20" if above else "vol<SMA20"))
+                note = "vol<SMA20"
+            notes.append(note)
             breakdown.append({"ok": ok, "text": text})
 
         # 4) RSI (ไม่สุดโต่ง)
@@ -324,12 +330,17 @@ def compute_signal(
     if enable_mtf and eval_is_buy is not None:
         try:
             wk_close = close.resample("W").last().dropna()
-            # ตัดแท่งสัปดาห์ "ปัจจุบันที่ยังก่อตัว" ออกก่อนคิด EMA — no-repaint ให้ตรงกับ daily layer
-            # resample("W") ลงท้ายวันอาทิตย์ ถ้าแท่งรายวันล่าสุดยังไม่ถึงวันสิ้นสุดสัปดาห์นั้น = สัปดาห์ยังไม่ปิด
-            if len(wk_close) >= 1 and (
-                pd.Timestamp(close.index[-1]).normalize() < pd.Timestamp(wk_close.index[-1]).normalize()
-            ):
-                wk_close = wk_close.iloc[:-1]
+            # ตัดแท่งสัปดาห์ "ปัจจุบันที่ยังก่อตัว" ก่อนคิด EMA (no-repaint) — ใช้ได้ทั้งตลาด 5 วันและ 7 วัน
+            # resample("W") ป้ายชื่อ bin = วันอาทิตย์ (W-SUN) · สัปดาห์ยัง "ก่อตัว" ถ้า "วันนี้ (UTC)"
+            # ยังอยู่/ก่อนวันสิ้นสุด bin → ตัดทิ้ง · ถ้าผ่านวันอาทิตย์ไปแล้ว = ปิดสมบูรณ์ → เก็บไว้
+            # *เทียบ "วันนี้" ไม่ใช่ index แท่งล่าสุด* — หุ้น/ทองแท่งล่าสุดเป็นศุกร์เสมอ (< อาทิตย์) ถ้าเทียบ
+            #  index จะตัดสัปดาห์ที่ปิดครบแล้วทิ้งทุกครั้ง → weekly EMA ช้าไป 1 สัปดาห์ตลอด (bug ที่ review จับได้)
+            if len(wk_close) >= 1:
+                _today = pd.Timestamp.now(tz="UTC").normalize().tz_localize(None)
+                _wend = pd.Timestamp(wk_close.index[-1])
+                _wend = (_wend.tz_localize(None) if _wend.tzinfo is not None else _wend).normalize()
+                if _today <= _wend:
+                    wk_close = wk_close.iloc[:-1]
             if len(wk_close) >= ema_slow + 2:
                 wk_fast = ema(wk_close, ema_fast)
                 wk_slow = ema(wk_close, ema_slow)

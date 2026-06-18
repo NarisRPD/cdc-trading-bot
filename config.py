@@ -81,7 +81,7 @@ class Config:
 
     # ── Data staleness guard (กันยิงสัญญาณบนราคาค้าง/feed ล่ม) ──
     max_stale_days_crypto: int = 3       # crypto: แท่งล่าสุดเก่ากว่านี้ (วัน) = ค้าง → ตัด
-    max_stale_days_equity: int = 6       # หุ้น/ทอง: เผื่อสุดสัปดาห์ + วันหยุดยาว
+    max_stale_days_equity: int = 8       # หุ้น/ทอง: เผื่อหยุดยาว (Songkran/Thanksgiving cluster) + เสาร์อาทิตย์ + margin
 
     # ── Sideway filter (กันแนะนำตัวไร้เทรนด์ — สมดุล: ADX ต่ำ + MA150 แบน, เก็บ early-trend) ──
     filter_sideway: bool = True          # ตัด sideway ออกจากหมวดใกล้กลับตัว
@@ -145,7 +145,7 @@ def load_config() -> Config:
         reversal_max=_get_int("REVERSAL_MAX", 6),
         reversal_fresh_only=_get_bool("REVERSAL_FRESH_ONLY", True),
         max_stale_days_crypto=_get_int("MAX_STALE_DAYS_CRYPTO", 3),
-        max_stale_days_equity=_get_int("MAX_STALE_DAYS_EQUITY", 6),
+        max_stale_days_equity=_get_int("MAX_STALE_DAYS_EQUITY", 8),
         filter_sideway=_get_bool("FILTER_SIDEWAY", True),
         sideway_adx_max=_get_float("SIDEWAY_ADX_MAX", 20.0),
         enable_option_liquidity=_get_bool("ENABLE_OPTION_LIQUIDITY", True),

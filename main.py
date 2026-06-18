@@ -145,7 +145,9 @@ def _pick_reversal(signals: List[Signal], cfg: Config) -> List[Signal]:
     (แท่งก่อนหน้าไม่ได้อยู่ในโซนกลับตัว) กันเตือนตัวเดิมซ้ำทุกวัน (C4)"""
     rev = [s for s in signals if s.zone in ("blue", "orange")]
     if cfg.reversal_fresh_only:
-        rev = [s for s in rev if (s.prev_zone or "") not in ("blue", "orange")]
+        # "เพิ่งเข้าโซนนี้" = แท่งก่อนหน้าอยู่คนละโซน (เทียบโซนตัวเอง ไม่ใช่เซ็ตรวม)
+        # → ยอมรับการพลิกข้ามทิศ orange→blue / blue→orange (เป็นการเข้าโซนใหม่จริง ไม่ใช่ค้างเดิม)
+        rev = [s for s in rev if (s.prev_zone or "") != s.zone]
     return rev
 
 
@@ -887,17 +889,18 @@ def build_messages(results: List[GroupResult], cfg: Config) -> List[str]:
     if not messages:
         # แจ้งสถานะแม้ไม่มีสัญญาณ — แยก "ดึงข้อมูลไม่ได้" ออกจาก "ไม่มีสัญญาณ" (B2)
         total_scanned = sum(r.scanned for r in results)
+        total_skipped = sum(r.skipped for r in results)  # ข้ามทั้งหมด (ข้อมูลไม่พอ+ดึงไม่ได้+ค้าง)
         total_failed = sum(r.fetch_failed for r in results)
         total_stale = sum(r.stale for r in results)
         kind = "คุณภาพสูง (HIGH-QUALITY)" if cfg.alert_high_quality_only else "Buy/Sell ใหม่"
         extra = ""
         if total_failed:
-            extra += f"\n⚠️ ดึงข้อมูลไม่ได้ {total_failed} ตัว (อาจไม่ใช่ 'ตลาดเงียบจริง')"
+            extra += f"\n⚠️ ในนั้นดึงข้อมูลไม่ได้ {total_failed} ตัว (อาจไม่ใช่ 'ตลาดเงียบจริง')"
         if total_stale:
-            extra += f"\n⚠️ ข้อมูลค้าง {total_stale} ตัว (ถูกตัดออก)"
+            extra += f"\n⚠️ ข้อมูลค้างถูกตัด {total_stale} ตัว"
         messages.append(
             f"ℹ️ CDC Scanner — ไม่มีสัญญาณ{kind}ในวันนี้\n"
-            f"สแกนได้ {total_scanned} ตัว{extra}\n"
+            f"สแกนได้ {total_scanned} ตัว / ข้าม {total_skipped} ตัว{extra}\n"
             f"📅 อ้างอิงแท่งปิดวันที่: {ref_date}"
         )
 
