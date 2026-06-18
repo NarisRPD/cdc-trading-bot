@@ -36,6 +36,10 @@ def record_trade(
         "r_multiple": r_mult,
         "opened_at": pos.get("entry_time"),
         "closed_at": closed_at,
+        # D3: เก็บ feature ตอนเข้า (เดิม make_position คำนวณแล้วทิ้ง) → feedback loop "เข้าโซนไหน/ADX เท่าไหร่ win สูง"
+        "entry_zone": pos.get("entry_zone"),
+        "entry_adx": pos.get("adx"),
+        "market": pos.get("market"),
     }
     trades = store.load_json(_FILE, [])
     trades.append(trade)
@@ -62,6 +66,17 @@ def compute_stats() -> Optional[dict]:
     avg_r = (sum(rmults) / len(rmults)) if rmults else None
     total_r = sum(rmults) if rmults else None
 
+    # D3: group-by โซนที่เข้า → win-rate ต่อโซน (feedback loop)
+    by_zone: dict = {}
+    for t in trades:
+        z, p = t.get("entry_zone"), t.get("pnl_pct")
+        if z and p is not None:
+            by_zone.setdefault(z, []).append(p)
+    zone_stats = {
+        z: {"n": len(ps), "win_rate": round(sum(1 for x in ps if x > 0) / len(ps) * 100.0)}
+        for z, ps in by_zone.items()
+    }
+
     return {
         "trades": n,
         "win_rate": round(win_rate, 1) if win_rate is not None else None,
@@ -70,4 +85,5 @@ def compute_stats() -> Optional[dict]:
         "best_r": round(max(rmults), 2) if rmults else None,
         "worst_r": round(min(rmults), 2) if rmults else None,
         "avg_pnl_pct": round(sum(pnls) / len(pnls), 2) if pnls else None,
+        "by_zone": zone_stats,
     }

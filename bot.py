@@ -944,6 +944,11 @@ def _handle_stats() -> str:
         lines.append(f"• ดีสุด/แย่สุด: {stats['best_r']:+.2f}R / {stats['worst_r']:+.2f}R")
     if stats["avg_pnl_pct"] is not None:
         lines.append(f"• กำไร/ขาดทุนเฉลี่ย: {stats['avg_pnl_pct']:+.2f}%")
+    if stats.get("by_zone"):  # D3: win-rate ต่อโซนที่เข้า
+        lines.append("• ตามโซนที่เข้า:")
+        for z, zs in sorted(stats["by_zone"].items(), key=lambda kv: -kv[1]["n"]):
+            from core.signals import zone_label
+            lines.append(f"    {zone_label(z)}: {zs['win_rate']:.0f}% (n={zs['n']})")
     n = stats["trades"]
     avg = stats["avg_r"] or 0
     if n < 20:
