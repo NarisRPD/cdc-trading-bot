@@ -35,6 +35,23 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _int_env(name: str, default: int) -> int:
+    """อ่าน env เป็น int — ค่าพังให้ default + log (อย่าเงียบ ๆ ทำทั้ง eval ล่ม)"""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        log.warning("env %s ค่าไม่ใช่ int — ใช้ default %d", name, default)
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        log.warning("env %s ค่าไม่ใช่ float — ใช้ default %s", name, default)
+        return default
+
+
 def _regime_bull(market: str, cfg) -> Optional[bool]:
     """ดัชนีอ้างอิงของตลาดอยู่เหนือ EMA200 ไหม (bull) — None ถ้าดึงไม่ได้ (D4)"""
     ref = _REGIME_REF.get(market)
@@ -119,9 +136,9 @@ def evaluate_outcomes(cfg, *, max_eval: int = 80) -> int:
     except Exception as e:  # noqa: BLE001
         log.warning("evaluate_outcomes import ไม่ได้: %s", e)
         return 0
-    target_k = float(os.getenv("EVAL_TARGET_ATR", "1.5"))
-    stop_k = float(os.getenv("EVAL_STOP_ATR", "1.5"))
-    lookahead = int(os.getenv("EVAL_LOOKAHEAD_BARS", "10"))
+    target_k = _float_env("EVAL_TARGET_ATR", 1.5)
+    stop_k = _float_env("EVAL_STOP_ATR", 1.5)
+    lookahead = _int_env("EVAL_LOOKAHEAD_BARS", 10)
     try:
         rows = store.load_json(_LOG_FILE, [])
         if not isinstance(rows, list) or not rows:
@@ -129,6 +146,9 @@ def evaluate_outcomes(cfg, *, max_eval: int = 80) -> int:
         today = pd.Timestamp.now(tz="UTC").normalize().tz_localize(None)
         # ครบอายุ = ผ่าน lookahead แท่งทำการแล้ว (เผื่อวันหยุด ~×1.6 วันปฏิทิน)
         min_age = max(lookahead, int(lookahead * 1.6))
+        # ปิดผลเป็น expired ได้เฉพาะเมื่อเก็บแท่ง forward ครบ window หรือแก่เกิน hard_expire
+        # (กันเคสค้างถาวรถ้า feed สั้นจริง — delisted / ข้อมูลขาด)
+        hard_expire = max(min_age, _int_env("EVAL_HARD_EXPIRE_DAYS", lookahead * 3))
         ready = []
         for r in rows:
             if r.get("outcome") is not None or not r.get("atr") or not r.get("bar_date"):
@@ -159,8 +179,20 @@ def evaluate_outcomes(cfg, *, max_eval: int = 80) -> int:
                 try:
                     bd = pd.Timestamp(r["bar_date"]).normalize()
                     pos = int(idx.searchsorted(bd))
-                    fh = highs[pos + 1: pos + 1 + lookahead]
-                    fl = lows[pos + 1: pos + 1 + lookahead]
+                    if pos >= len(idx):
+                        continue  # bar_date หลังแท่งสุดท้าย → ยังไม่มีแท่ง forward, ค้างไว้
+                    # exact match: แท่งสัญญาณอยู่ที่ pos → forward เริ่ม pos+1
+                    # ไม่ตรง (วันสัญญาณเป็นวันหยุด/feed revise ทิ้ง): idx[pos] = แท่งแรกหลัง bd = forward แท่งแรก
+                    #   → เริ่มที่ pos (อย่าใช้ pos+1 จะข้ามแท่ง forward แรกไป = ทำผลเพี้ยน/win-rate ต่ำเกิน)
+                    # pos==0 + ไม่ตรง = bd อยู่ก่อนทั้ง window → แท่งเข้าหายจริง ประเมินไม่ได้ ข้าม
+                    if idx[pos] == bd:
+                        start = pos + 1
+                    elif pos == 0:
+                        continue
+                    else:
+                        start = pos
+                    fh = highs[start: start + lookahead]
+                    fl = lows[start: start + lookahead]
                     if len(fh) == 0:
                         continue
                     entry = float(r["close"]); atr = float(r["atr"])
@@ -179,10 +211,18 @@ def evaluate_outcomes(cfg, *, max_eval: int = 80) -> int:
                             outcome, bars = "win", i + 1; break
                         if hit_s:
                             outcome, bars = "loss", i + 1; break
+                    # ยังไม่ชน target/stop และเก็บแท่ง forward ไม่ครบ window → ปล่อยค้าง (outcome=None)
+                    # ให้ประเมินใหม่รอบหน้าเมื่อมีแท่งครบ — กัน "expired" ด่วนช่วงวันหยุดเยอะ/แท่งล่าสุดยังไม่ออก
+                    # (ทำ win-rate ต่ำกว่าจริง) · ยกเว้นแก่เกิน hard_expire = feed สั้นจริง → ยอมปิด expired
+                    if outcome == "expired" and len(fh) < lookahead and (today - bd).days < hard_expire:
+                        continue
+                    # MFE/MAE วัดเฉพาะช่วง "ถือจริง" (ถึงแท่งที่ปิดผล) ไม่รวมแท่งหลังไม้ปิดไปแล้ว
+                    # (expired → bars==len(fh) จึงเท่าเดิม)
+                    fh_h, fl_h = fh[:bars], fl[:bars]
                     if is_buy:
-                        mfe = (float(max(fh)) - entry) / atr; mae = (entry - float(min(fl))) / atr
+                        mfe = (float(max(fh_h)) - entry) / atr; mae = (entry - float(min(fl_h))) / atr
                     else:
-                        mfe = (entry - float(min(fl))) / atr; mae = (float(max(fh)) - entry) / atr
+                        mfe = (entry - float(min(fl_h))) / atr; mae = (float(max(fh_h)) - entry) / atr
                     r["outcome"] = outcome
                     r["bars_to_outcome"] = bars
                     r["mfe_r"] = round(mfe, 2)
@@ -212,8 +252,8 @@ def calib_summary(cfg=None) -> str:
     done = [r for r in rows if r.get("outcome") in ("win", "loss")]
     pending = [r for r in rows if r.get("outcome") is None]
     expired = [r for r in rows if r.get("outcome") == "expired"]
-    tgt = float(os.getenv("EVAL_TARGET_ATR", "1.5")); stp = float(os.getenv("EVAL_STOP_ATR", "1.5"))
-    look = int(os.getenv("EVAL_LOOKAHEAD_BARS", "10"))
+    tgt = _float_env("EVAL_TARGET_ATR", 1.5); stp = _float_env("EVAL_STOP_ATR", 1.5)
+    look = _int_env("EVAL_LOOKAHEAD_BARS", 10)
     if not done:
         return ("🔮 Calibration — ยังไม่มีผลพอประเมิน\n"
                 f"บันทึกแล้ว {len(rows)} สัญญาณ · รอครบอายุ {len(pending)} · ไม่ถึงเป้า/ตัด {len(expired)}\n"
