@@ -179,6 +179,7 @@ def compute_signal(
     adx_period: int = 14,
     rsi_period: int = 14,
     vol_sma_period: int = 20,
+    adx_min: float = 20.0,          # C1: เกณฑ์ ADX ที่ให้ "ดาว momentum" — caller ส่ง min_adx_to_alert
     enable_ema200_filter: bool = True,
     min_bars_required: int = 60,
     enable_mtf: bool = True,
@@ -276,9 +277,10 @@ def compute_signal(
             notes.append("trend" + (">" if is_buy else "<") + "EMA200")
             breakdown.append({"ok": ok, "text": text})
 
-        # 2) Momentum (ADX)
+        # 2) Momentum (ADX) — ดาวให้ตามเกณฑ์เดียวกับ hard filter (C1) กัน "ดาว phantom"
+        #    ที่ได้ตอน 20<ADX≤25 แต่ถูก gate ตัดทิ้ง → 'ดาว/HQ' ไม่ตรงกับสิ่งที่ผู้ใช้เห็น
         if adx_last is not None:
-            ok = adx_last > 20
+            ok = adx_last > adx_min
             if ok:
                 score += 1
             text = f"ADX = {adx_last:.0f} (" + ("มีโมเมนตัมจริง" if ok else "ตลาด sideways") + ")"

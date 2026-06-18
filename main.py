@@ -133,7 +133,7 @@ def _compute_for(df, sym: str, name: str, cfg: Config, **extra):
         df, symbol=sym, display_name=name,
         ema_fast=cfg.ema_fast, ema_slow=cfg.ema_slow, ema_trend=cfg.ema_trend,
         adx_period=cfg.adx_period, rsi_period=cfg.rsi_period,
-        vol_sma_period=cfg.vol_sma_period,
+        vol_sma_period=cfg.vol_sma_period, adx_min=cfg.min_adx_to_alert,
         enable_ema200_filter=cfg.enable_ema200_filter,
         min_bars_required=cfg.min_bars_required,
         enable_mtf=cfg.enable_mtf, **extra,
@@ -651,8 +651,10 @@ def _pass_hard_filters(s: Signal, cfg: Config) -> bool:
         return False  # ไม่มีแรงซื้อขาย
     if s.rsi is not None and s.signal == "buy" and s.rsi >= cfg.max_rsi_buy:
         return False  # overbought (ไล่ของแพง)
-    # Relative Strength gate — มีผลเฉพาะกลุ่มใหญ่พอ (rs_rank ถูกคำนวณ)
-    if cfg.enable_rs and s.rs_rank is not None:
+    # Relative Strength gate (C2) — เปิด/ปิดด้วย rs_hard_gate · มีผลเฉพาะกลุ่มใหญ่พอ (rs_rank คำนวณได้)
+    # ⚠️ RS percentile คิดบน universe ผู้รอด (survivorship) + กลุ่มเล็กข้าม gate → ไม่สอดคล้องข้ามกลุ่ม
+    #    soft mode (rs_hard_gate=false): ไม่ตัด แต่ RS ยังจัดอันดับใน _section (แข็งขึ้นบน)
+    if cfg.rs_hard_gate and cfg.enable_rs and s.rs_rank is not None:
         if s.signal == "buy" and cfg.min_rs_buy > 0 and s.rs_rank < cfg.min_rs_buy:
             return False  # อ่อนกว่าตลาด ไม่ใช่ leader → ไม่ซื้อ
         if s.signal == "sell" and cfg.max_rs_sell < 100 and s.rs_rank > cfg.max_rs_sell:

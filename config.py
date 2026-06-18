@@ -67,6 +67,9 @@ class Config:
     enable_rs: bool = True               # คำนวณ RS rank (เทียบความแข็งภายในกลุ่ม)
     min_rs_buy: float = 50.0             # Buy: RS < นี้ = ตัด (อ่อนกว่าครึ่งตลาด) · 0 = ปิด
     max_rs_sell: float = 50.0            # Sell: RS > นี้ = ตัด (แข็งเกินไปไม่เหมาะ Put) · 100 = ปิด
+    rs_hard_gate: bool = True            # True = ตัดทิ้งตาม min_rs_buy/max_rs_sell (เดิม) · False = ใช้ RS
+                                         # แค่จัดอันดับ ไม่ตัด (RS percentile มี survivorship bias —
+                                         # แนะนำตั้ง false หลังดู /calib ว่า low-RS แพ้จริงไหม) [C2]
 
     # ── Market regime (ดัชนีอ้างอิงเหนือ EMA200 ไหม — โชว์สถานะตลาด) ──
     enable_regime: bool = True           # โชว์สถานะตลาดรวมในหัวข้อความ scan
@@ -139,6 +142,7 @@ def load_config() -> Config:
         enable_rs=_get_bool("ENABLE_RS", True),
         min_rs_buy=_get_float("MIN_RS_BUY", 50.0),
         max_rs_sell=_get_float("MAX_RS_SELL", 50.0),
+        rs_hard_gate=_get_bool("RS_HARD_GATE", True),
         enable_regime=_get_bool("ENABLE_REGIME", True),
         enable_fundamentals=_get_bool("ENABLE_FUNDAMENTALS", True),
         enable_reversal_watch=_get_bool("ENABLE_REVERSAL", True),
