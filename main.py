@@ -1611,6 +1611,13 @@ def main() -> int:
             export_signals(results, cfg)
         except Exception as e:  # noqa: BLE001
             log.warning("export signals (Part 2 bridge) failed: %s", e)
+        # D1: บันทึก signal log + ประเมินผล forward-test (วัดความแม่นด้วยหลักฐาน) — best-effort
+        try:
+            import signals_log
+            signals_log.log_signals(results, cfg)
+            signals_log.evaluate_outcomes(cfg)
+        except Exception as e:  # noqa: BLE001
+            log.warning("signals_log failed: %s", e)
 
     if cfg.dry_run:
         log.info("DRY_RUN: %d message(s) to send (ไม่ส่งจริง)", len(messages))

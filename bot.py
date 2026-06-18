@@ -944,9 +944,27 @@ def _handle_stats() -> str:
         lines.append(f"• ดีสุด/แย่สุด: {stats['best_r']:+.2f}R / {stats['worst_r']:+.2f}R")
     if stats["avg_pnl_pct"] is not None:
         lines.append(f"• กำไร/ขาดทุนเฉลี่ย: {stats['avg_pnl_pct']:+.2f}%")
-    note = "✅ ระบบมีความได้เปรียบ" if (stats["avg_r"] or 0) > 0 else "⚠️ ค่าเฉลี่ย R ติดลบ — ทบทวนวินัย/กลยุทธ์"
+    n = stats["trades"]
+    avg = stats["avg_r"] or 0
+    if n < 20:
+        note = f"ℹ️ ตัวอย่างยังน้อย (n={n}) — ยังสรุป 'มี edge' ไม่ได้ · ดู /calib (วัดสัญญาณตรง ๆ)"
+    elif avg > 0:
+        note = (f"✅ ค่าเฉลี่ย R เป็นบวก — แต่มาจากไม้ที่คุณเลือกเข้า/ปิดเอง (selection bias)\n"
+                "   วัด edge ของ 'สัญญาณ' แบบไม่ลำเอียงด้วย /calib")
+    else:
+        note = "⚠️ ค่าเฉลี่ย R ติดลบ — ทบทวนวินัย/กลยุทธ์"
     lines.append(note)
     return "\n".join(lines)
+
+
+def _handle_calib() -> str:
+    """D2: win-rate เชิงประจักษ์ของสัญญาณ CDC (mechanical forward-test จาก signals_log)"""
+    try:
+        import signals_log
+        return signals_log.calib_summary()
+    except Exception as e:  # noqa: BLE001
+        log.warning("calib failed: %s", e)
+        return "อ่าน calibration ไม่ได้ตอนนี้"
 
 
 def _handle_scan(args: list[str]) -> str:
@@ -1193,7 +1211,8 @@ _HELP = (
     "• /edit SYM ราคา — แก้ราคาเข้า\n"
     "• /note SYM ข้อความ — ใส่โน้ต\n\n"
     "สถิติ/ความรู้:\n"
-    "• /stats — สถิติ win-rate / R / expectancy\n"
+    "• /stats — สถิติ win-rate / R / expectancy (จากไม้ที่คุณปิด)\n"
+    "• /calib — 🔮 win-rate ของ 'สัญญาณ' จริง (forward-test ไม่ลำเอียง)\n"
     "• /zone — ความหมาย 6 โซน CDC\n"
     "• /macro — ปฏิทินมาโคร US (FOMC/CPI/จ้างงาน) 7 วันข้างหน้า\n"
     "• /news [SYMBOL] — ข่าวล่าสุด 24 ชม. (บอตเตือนข่าวด่วนหุ้นที่ถืออัตโนมัติทุก ~10 นาที)\n"
@@ -1245,6 +1264,8 @@ def _dispatch(text: str) -> str:
         return _handle_note(args)
     if cmd == "stats":
         return _handle_stats()
+    if cmd == "calib":
+        return _handle_calib()
     if cmd == "zone":
         return _ZONE
     if cmd == "macro":
