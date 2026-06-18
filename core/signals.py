@@ -285,19 +285,22 @@ def compute_signal(
             notes.append(f"ADX={adx_last:.1f}")
             breakdown.append({"ok": ok, "text": text})
 
-        # 3) Volume ยืนยัน (โชว์อัตราส่วน — >1.5× = breakout แรง แบบ VCP)
+        # 3) Volume ยืนยัน — ดาวให้เฉพาะ "breakout แรงจริง" (≥1.5× SMA20)
+        #    กัน double-count: vol>SMA20 เป็น hard gate (require_volume_above_sma) อยู่แล้ว
+        #    ถ้านับ vol>SMA20 เป็นดาวด้วย ไม้ที่รอด gate จะได้ดาวนี้ทุกตัว → ดาวไร้ค่าแยกแยะ + ดัน HQ เกินจริง
         if vol_last is not None and vol_avg_last is not None:
             ratio = (vol_last / vol_avg_last) if vol_avg_last > 0 else None
-            ok = vol_last > vol_avg_last
+            above = vol_last > vol_avg_last                     # ผ่าน gate ปริมาณ
+            ok = ratio is not None and ratio >= 1.5             # ดาว = breakout แรง (discriminating)
             if ok:
                 score += 1
-            if ratio is not None and ratio >= 1.5:
+            if ok:
                 text = f"ปริมาณซื้อขาย {ratio:.1f}× SMA20 (breakout แรง)"
-            elif ratio is not None and ok:
-                text = f"ปริมาณซื้อขาย {ratio:.1f}× SMA20"
+            elif above and ratio is not None:
+                text = f"ปริมาณซื้อขาย {ratio:.1f}× SMA20 (เหนือค่าเฉลี่ยแต่ยังไม่ breakout)"
             else:
                 text = "ปริมาณซื้อขายต่ำกว่า SMA20"
-            notes.append("vol>SMA20" if ok else "vol<SMA20")
+            notes.append("vol>=1.5xSMA20" if ok else ("vol>SMA20" if above else "vol<SMA20"))
             breakdown.append({"ok": ok, "text": text})
 
         # 4) RSI (ไม่สุดโต่ง)
@@ -321,6 +324,12 @@ def compute_signal(
     if enable_mtf and eval_is_buy is not None:
         try:
             wk_close = close.resample("W").last().dropna()
+            # ตัดแท่งสัปดาห์ "ปัจจุบันที่ยังก่อตัว" ออกก่อนคิด EMA — no-repaint ให้ตรงกับ daily layer
+            # resample("W") ลงท้ายวันอาทิตย์ ถ้าแท่งรายวันล่าสุดยังไม่ถึงวันสิ้นสุดสัปดาห์นั้น = สัปดาห์ยังไม่ปิด
+            if len(wk_close) >= 1 and (
+                pd.Timestamp(close.index[-1]).normalize() < pd.Timestamp(wk_close.index[-1]).normalize()
+            ):
+                wk_close = wk_close.iloc[:-1]
             if len(wk_close) >= ema_slow + 2:
                 wk_fast = ema(wk_close, ema_fast)
                 wk_slow = ema(wk_close, ema_slow)
