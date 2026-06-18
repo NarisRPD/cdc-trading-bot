@@ -17,9 +17,10 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-# gemini-2.5-flash: เร็ว ถูก แปลไทยดี — เปลี่ยนได้ด้วย env GEMINI_MODEL
+# gemini-2.5-flash-lite: เร็ว ถูกกว่า ~3x แปลไทยพอใช้ได้ — เปลี่ยนได้ด้วย env GEMINI_MODEL
+# (ใช้ default เดียวกับ data/ai.py · กลับเป็น gemini-2.5-flash ถ้าต้องการคุณภาพแปลสูงขึ้น)
 # ถ้ารุ่นหลักโดนปลดระวาง (404) จะ fallback เป็น gemini-flash-latest (alias ชี้รุ่นล่าสุดเสมอ)
-_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip() or "gemini-2.5-flash-lite"
 _FALLBACK_MODEL = "gemini-flash-latest"
 _CACHE_FILE = "translate_cache.json"
 _KEEP_DAYS = 30  # คำแปลเก่ากว่านี้ prune ทิ้ง (กันไฟล์บวม)
