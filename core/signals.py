@@ -81,6 +81,8 @@ class Signal:
     ema_fast: Optional[float] = None  # EMA12 ล่าสุด — ใช้คำนวณโซนราคาเข้าที่เหมาะ (แนวรับ/ต้าน)
     ema_slow: Optional[float] = None  # EMA26 ล่าสุด
     trend_q: Optional[dict] = None  # คุณภาพเทรนด์ {r2, up} — R² regression ราคา (เนียน vs ขรุขระ)
+    setup_score: Optional[int] = None  # คะแนน setup quality (price action 14-มิติ) — ปรับ "อันดับ"
+    setup_factors: Optional[list] = None  # [{key,delta,text}] ปัจจัยที่ติด — ไว้โชว์ 🧭 Setup
 
     def stars(self) -> str:
         return "⭐" * self.score + f" ({self.score}/4)" if self.score > 0 else "(0/4)"
@@ -168,6 +170,150 @@ def trend_quality(close: pd.Series, n: int = 20) -> Optional[dict]:
         return None
 
 
+def setup_quality(
+    df: pd.DataFrame,
+    is_buy: bool,
+    *,
+    atr_val: Optional[float] = None,
+    trend_q_r2: Optional[float] = None,
+    ext_atr: Optional[float] = None,
+    breakout_lb: int = 20,
+    recent: int = 3,
+    gap_recent: int = 5,
+    long_atr: float = 1.5,
+    gap_atr: float = 0.3,
+    dist_lb: int = 25,
+    struct_lb: int = 40,
+    tl_lb: int = 20,
+) -> Optional[dict]:
+    """ประเมิน "คุณภาพ setup" จาก price action รายวัน (มิติเทรดเดอร์ #5,7,9–14) → คะแนนปรับอันดับ
+    is_buy=True → ประเมินฝั่งขึ้น · False → ฝั่งลง
+
+    **no-repaint**: ใช้เฉพาะแท่งที่ปิดแล้ว (caller ตัดแท่งก่อตัวออกแล้ว); breakout/gap เทียบ
+    "แท่งก่อนหน้า" เท่านั้น ไม่แอบดูอนาคต
+
+    คืน {"score": int, "factors": [{"key","delta","text"}]} (score = ผลรวม delta)
+    หรือ None ถ้าข้อมูลไม่พอ/พัง (best-effort — ห้ามทำ compute_signal ล่ม)"""
+    try:
+        import numpy as np
+        need = max(breakout_lb, dist_lb, struct_lb, tl_lb) + 3
+        if df is None or len(df) < need or not {"high", "low", "close"}.issubset(df.columns):
+            return None
+        h = df["high"].astype(float).to_numpy()
+        l = df["low"].astype(float).to_numpy()
+        c = df["close"].astype(float).to_numpy()
+        o = df["open"].astype(float).to_numpy() if "open" in df.columns else None
+        v = df["volume"].astype(float).to_numpy() if "volume" in df.columns else None
+        atrv = atr_val if (atr_val and atr_val > 0) else float(np.nanmean(h[-14:] - l[-14:]))
+        if not atrv or atrv <= 0 or not np.isfinite(atrv):
+            return None
+
+        factors: list[dict] = []
+
+        def add(key: str, delta: int, text: str) -> None:
+            factors.append({"key": key, "delta": delta, "text": text})
+
+        def _when(k: int) -> str:
+            return " (วันนี้)" if k == 1 else f" ({k} วันก่อน)"
+
+        # 1) BREAKOUT (#7) — ทะลุ High/Low N วัน (เทียบเฉพาะ "แท่งก่อนหน้า" = no-repaint)
+        for k in range(1, recent + 1):       # k=1 = แท่งล่าสุด
+            i = -k
+            wh, wl = h[i - breakout_lb:i], l[i - breakout_lb:i]   # N แท่งก่อนแท่ง i (ไม่รวม i)
+            if len(wh) < breakout_lb:
+                break
+            hi_max, lo_min = np.nanmax(wh), np.nanmin(wl)   # nan-aware: กัน NaN วันหยุด poison ทั้งหน้าต่าง
+            if is_buy and np.isfinite(hi_max) and c[i] > hi_max:
+                add("breakout", +1, f"ทะลุ High {breakout_lb} วัน" + _when(k))
+                break
+            if (not is_buy) and np.isfinite(lo_min) and c[i] < lo_min:
+                add("breakout", +1, f"หลุด Low {breakout_lb} วัน" + _when(k))
+                break
+
+        # 2) GAP ตามเทรนด์ (#11) — เปิดข้ามแท่งก่อนหน้า ≥ gap_atr×ATR แล้วยืนได้
+        if o is not None:
+            for k in range(1, gap_recent + 1):
+                i = -k
+                if i - 1 < -len(c):
+                    break
+                if is_buy and (o[i] - h[i - 1]) >= gap_atr * atrv and c[i] >= o[i]:
+                    add("gap", +1, "มี gap ขึ้น" + _when(k))
+                    break
+                if (not is_buy) and (l[i - 1] - o[i]) >= gap_atr * atrv and c[i] <= o[i]:
+                    add("gap", +1, "มี gap ลง" + _when(k))
+                    break
+
+        # 3) แท่งเทียนยาวตามเทรนด์ (#10) — ช่วงกว้าง ≥ long_atr×ATR + ปิดใกล้ปลายแท่งฝั่งเทรนด์
+        for k in range(1, recent + 1):
+            i = -k
+            rng = h[i] - l[i]
+            if rng < long_atr * atrv or rng <= 0:
+                continue
+            pos = (c[i] - l[i]) / rng     # 1.0 = ปิดที่ high, 0 = ปิดที่ low
+            bull_body = o is None or c[i] > o[i]
+            bear_body = o is None or c[i] < o[i]
+            if is_buy and pos >= 0.6 and bull_body:
+                add("long_candle", +1, "แท่งยาวเขียวตามเทรนด์" + _when(k))
+                break
+            if (not is_buy) and pos <= 0.4 and bear_body:
+                add("long_candle", +1, "แท่งยาวแดงตามเทรนด์" + _when(k))
+                break
+
+        # 4) โครงสร้าง HH-HL / LH-LL (#9) — เทียบครึ่งหลังกับครึ่งแรกของ struct_lb แท่ง (nan-aware)
+        rh, rl = h[-struct_lb:], l[-struct_lb:]
+        half = struct_lb // 2
+        hh_new, hh_old = np.nanmax(rh[half:]), np.nanmax(rh[:half])
+        ll_new, ll_old = np.nanmin(rl[half:]), np.nanmin(rl[:half])
+        if np.all(np.isfinite([hh_new, hh_old, ll_new, ll_old])):
+            if is_buy and hh_new > hh_old and ll_new > ll_old:
+                add("structure", +1, "โครงสร้าง HH-HL (ขึ้นเป็นขั้นบันได)")
+            elif (not is_buy) and hh_new < hh_old and ll_new < ll_old:
+                add("structure", +1, "โครงสร้าง LH-LL (ลงเป็นขั้นบันได)")
+
+        # 5) แรงซื้อ-ขายมือใหญ่ (#12,#14) — distribution/accumulation days (~ประมาณการ จาก OHLCV)
+        #    accumulation = ปิดขึ้น + volume สูงกว่าวันก่อน (มือใหญ่เก็บ) · distribution = ปิดลง + volume สูง
+        if v is not None:
+            cc, vv = c[-dist_lb - 1:], v[-dist_lb - 1:]
+            acc = dist = 0
+            for i in range(1, len(cc)):
+                if vv[i] > vv[i - 1]:
+                    if cc[i] > cc[i - 1]:
+                        acc += 1
+                    elif cc[i] < cc[i - 1]:
+                        dist += 1
+            fav = (acc - dist) if is_buy else (dist - acc)
+            if fav >= 3:
+                add("volume_pressure", +1,
+                    ("วันสะสม>วันแจกของ (มือใหญ่เก็บ)" if is_buy else "วันแจกของ>วันสะสม (มือใหญ่ขาย)") + " ~ประมาณ")
+            elif fav <= -3:
+                add("volume_pressure", -1,
+                    ("วันแจกของเยอะ (มือใหญ่ขาย/แรงซื้ออ่อน)" if is_buy else "วันสะสมเยอะ (สวนฝั่งลง)") + " ~ประมาณ")
+
+        # 6) Trendline (#5) — fit เส้นต่ำ(buy)/เส้นสูง(sell) แล้วดูความชัน + ราคายังเคารพเส้น
+        #    fit เฉพาะจุดที่ไม่ใช่ NaN (กัน NaN วันหยุดทำ polyfit คืน nan ทั้งเส้น)
+        seg = tl_lb
+        ys = (l[-seg:] if is_buy else h[-seg:]).astype(float)
+        m = np.isfinite(ys)
+        if len(ys) == seg and m.sum() >= max(5, seg // 2) and np.ptp(ys[m]) > 0 and np.isfinite(c[-1]):
+            coef = np.polyfit(np.arange(seg, dtype=float)[m], ys[m], 1)
+            norm_slope = coef[0] / atrv          # ความชันต่อแท่ง เทียบ ATR
+            line_now = float(np.polyval(coef, seg - 1))
+            if is_buy and norm_slope > 0.05 and c[-1] >= line_now:
+                add("trendline", +1, "เส้นแนวรับชันขึ้น (ราคาเคารพเทรนด์ไลน์)")
+            elif (not is_buy) and norm_slope < -0.05 and c[-1] <= line_now:
+                add("trendline", +1, "เส้นแนวต้านชันลง (ราคาเคารพเทรนด์ไลน์)")
+
+        # 7) หักคะแนน: ยืดไกลจาก EMA12 (#3 เสี่ยงดอย) + กราฟขรุขระ R² ต่ำ (#8 ไร้ทิศทาง)
+        if ext_atr is not None and ext_atr >= 3.0:
+            add("overextended", -1, "ยืดไกลจาก EMA12 (เสี่ยงดอย/รอย่อ)")
+        if trend_q_r2 is not None and trend_q_r2 < 0.4:
+            add("messy", -1, "กราฟขรุขระ/ไร้ทิศทาง (R² ต่ำ)")
+
+        return {"score": int(sum(f["delta"] for f in factors)), "factors": factors}
+    except Exception:  # noqa: BLE001 — best-effort, ห้ามทำ compute_signal ล่ม
+        return None
+
+
 def compute_signal(
     df: pd.DataFrame,
     symbol: str,
@@ -185,6 +331,7 @@ def compute_signal(
     enable_mtf: bool = True,
     score_when_none: bool = False,
     eval_direction: Optional[str] = None,
+    compute_setup: bool = True,     # คำนวณ setup_quality ไหม (ปิดได้เมื่อ ENABLE_SETUP_QUALITY=false กัน CPU เปล่า)
 ) -> Optional[Signal]:
     """
     df ต้องมีคอลัมน์ open/high/low/close/volume, index เป็น datetime
@@ -364,6 +511,15 @@ def compute_signal(
         last_ts = last_ts.tz_localize(None)
 
     stage = weinstein_stage(close)  # ภาพใหญ่เทรนด์ (None ถ้าแท่งไม่พอ ~170)
+    tq = trend_quality(close)       # คุณภาพเทรนด์ (R²) — ใช้ทั้งโชว์และเป็น penalty ของ setup
+
+    # Setup quality (price action 14-มิติ) — คำนวณเมื่อมีทิศประเมิน + เปิดใช้ (กัน CPU เปล่าตอนปิดฟีเจอร์)
+    setup = None
+    if compute_setup and eval_is_buy is not None:
+        ext = (abs(close_v - float(fast.iloc[-1])) / atr_last) \
+            if (atr_last and not pd.isna(fast.iloc[-1])) else None
+        setup = setup_quality(df, eval_is_buy, atr_val=atr_last,
+                              trend_q_r2=(tq or {}).get("r2"), ext_atr=ext)
 
     return Signal(
         symbol=symbol,
@@ -387,5 +543,7 @@ def compute_signal(
         stage=stage,
         ema_fast=float(fast.iloc[-1]) if not pd.isna(fast.iloc[-1]) else None,
         ema_slow=float(slow.iloc[-1]) if not pd.isna(slow.iloc[-1]) else None,
-        trend_q=trend_quality(close),
+        trend_q=tq,
+        setup_score=(setup or {}).get("score"),
+        setup_factors=(setup or {}).get("factors"),
     )

@@ -136,7 +136,7 @@ def _compute_for(df, sym: str, name: str, cfg: Config, **extra):
         vol_sma_period=cfg.vol_sma_period, adx_min=cfg.min_adx_to_alert,
         enable_ema200_filter=cfg.enable_ema200_filter,
         min_bars_required=cfg.min_bars_required,
-        enable_mtf=cfg.enable_mtf, **extra,
+        enable_mtf=cfg.enable_mtf, compute_setup=cfg.enable_setup_quality, **extra,
     )
 
 
@@ -602,6 +602,18 @@ def _entry_line(s: Signal) -> Optional[str]:
             f"→ รอเด้งแตะ ~{_fmt_px(lo)} ค่อยเข้า")
 
 
+def _setup_line(s: Signal, cfg: Config) -> Optional[str]:
+    """🧭 Setup — สรุปคะแนน price action (14-มิติ) ที่ใช้ปรับ "อันดับ" · ✅ บวก / ⚠️ หัก"""
+    if not (cfg.enable_setup_quality and cfg.show_setup_quality):
+        return None
+    if s.setup_score is None or not s.setup_factors:
+        return None
+    sign = f"+{s.setup_score}" if s.setup_score > 0 else str(s.setup_score)
+    parts = [("✅ " if f.get("delta", 0) > 0 else "⚠️ ") + f.get("text", "")
+             for f in s.setup_factors[:5]]
+    return f"🧭 Setup {sign}: " + " · ".join(parts)
+
+
 def _format_signal_line(s: Signal, cfg: Config) -> str:
     # ดาวสูงสุด 5 = 4 confluence (Trend/ADX/Vol/RSI) + ยืนยันกราฟรายสัปดาห์
     star_count = s.score + (1 if s.mtf_aligned is True else 0)
@@ -618,6 +630,9 @@ def _format_signal_line(s: Signal, cfg: Config) -> str:
     tq = _trend_quality_line(s)  # คุณภาพเทรนด์ (R² เนียน/ขรุขระ)
     if tq:
         lines.append(tq)
+    su = _setup_line(s, cfg)  # 🧭 คะแนน setup (price action) ที่พับเข้าการจัดอันดับ
+    if su:
+        lines.append(su)
     if cfg.show_filter_breakdown and s.breakdown:
         for b in s.breakdown:
             lines.append(("✅ " if b["ok"] else "❌ ") + b["text"])
@@ -722,6 +737,9 @@ def _reversal_block(s: Signal, cfg: Config) -> str:
     tq = _trend_quality_line(s)  # คุณภาพเทรนด์ (R² เนียน/ขรุขระ)
     if tq:
         lines.append(tq)
+    su = _setup_line(s, cfg)  # 🧭 คะแนน setup (price action) ที่พับเข้าการจัดอันดับ
+    if su:
+        lines.append(su)
     if cfg.show_filter_breakdown and s.breakdown:
         for b in s.breakdown:
             lines.append(("✅ " if b["ok"] else "❌ ") + b["text"])
@@ -850,10 +868,24 @@ def build_messages(results: List[GroupResult], cfg: Config) -> List[str]:
             rs = x.rs_rank if x.rs_rank is not None else 50.0
             return -rs if is_buy else rs  # buy: แข็งขึ้นบน · sell: อ่อนขึ้นบน
 
-        ordered = sorted(
-            sigs,
-            key=lambda x: (0 if x.mtf_aligned is True else 1, _rs_key(x), -x.score, x.display_name),
-        )
+        def _eff_score(x: Signal) -> int:
+            # พับ setup_score เข้าคะแนนจัดอันดับ (clamp กันกลบ confluence เกินไป) — ไม่ตัดทิ้ง
+            base = x.score
+            if cfg.enable_setup_quality and x.setup_score is not None:
+                base += max(-3, min(4, x.setup_score))
+            return base
+
+        if cfg.enable_setup_quality:
+            # weekly-aligned ก่อน → คุณภาพรวม (confluence+setup) → RS → ชื่อ
+            ordered = sorted(
+                sigs,
+                key=lambda x: (0 if x.mtf_aligned is True else 1, -_eff_score(x), _rs_key(x), x.display_name),
+            )
+        else:
+            ordered = sorted(
+                sigs,
+                key=lambda x: (0 if x.mtf_aligned is True else 1, _rs_key(x), -x.score, x.display_name),
+            )
         for s in ordered:
             parts.append("")  # เว้นบรรทัดระหว่างสัญญาณ ให้อ่านง่าย
             parts.append(_format_signal_line(s, cfg))

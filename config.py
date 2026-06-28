@@ -90,6 +90,11 @@ class Config:
     filter_sideway: bool = True          # ตัด sideway ออกจากหมวดใกล้กลับตัว
     sideway_adx_max: float = 20.0        # ADX ต่ำกว่านี้ + MA150 แบน = sideway
 
+    # ── Setup quality (14-มิติ price action → ปรับ "อันดับ" ไม่ตัดทิ้ง ไม่แตะนิยาม HQ) ──
+    # รวม breakout/gap/แท่งยาว/โครงสร้าง HH-HL/แรงขาย-ซื้อ (distribution)/trendline + หักดอย/ขรุขระ
+    enable_setup_quality: bool = True    # คำนวณ + พับ setup_score เข้าการจัดอันดับ (ดันตัว setup ดีขึ้นบน)
+    show_setup_quality: bool = True      # โชว์บรรทัด 🧭 Setup สรุปปัจจัยใต้สัญญาณ
+
     # ── Option liquidity (กันแนะนำ option ที่ขายต่อไม่ออก — US เท่านั้น) ──
     enable_option_liquidity: bool = True  # เช็ก OI/spread ของสัญญาณที่โชว์ แล้วกรองคำแนะนำ option
     min_option_oi: int = 500              # OI รวมใกล้ ATM (call+put) ต่ำกว่านี้ = แย่ (ไม่แนะนำ)
@@ -152,6 +157,8 @@ def load_config() -> Config:
         max_stale_days_equity=_get_int("MAX_STALE_DAYS_EQUITY", 8),
         filter_sideway=_get_bool("FILTER_SIDEWAY", True),
         sideway_adx_max=_get_float("SIDEWAY_ADX_MAX", 20.0),
+        enable_setup_quality=_get_bool("ENABLE_SETUP_QUALITY", True),
+        show_setup_quality=_get_bool("SHOW_SETUP_QUALITY", True),
         enable_option_liquidity=_get_bool("ENABLE_OPTION_LIQUIDITY", True),
         min_option_oi=_get_int("MIN_OPTION_OI", 500),
         max_option_spread=_get_float("MAX_OPTION_SPREAD", 40.0),

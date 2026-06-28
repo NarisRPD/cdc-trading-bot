@@ -58,6 +58,19 @@ _OPT_LIQ_ON = os.getenv("ENABLE_OPTION_LIQUIDITY", "true").strip().lower() in ("
 _MIN_OI = int(os.getenv("MIN_OPTION_OI", "500") or "500")
 _MAX_SPREAD = float(os.getenv("MAX_OPTION_SPREAD", "40") or "40")
 
+# Setup quality line (14-มิติ price action) — ให้ตรงกับ config.py
+_SETUP_ON = (os.getenv("ENABLE_SETUP_QUALITY", "true").strip().lower() in ("1", "true", "yes", "y", "on")
+             and os.getenv("SHOW_SETUP_QUALITY", "true").strip().lower() in ("1", "true", "yes", "y", "on"))
+
+
+def _setup_block(s) -> str | None:
+    """🧭 Setup — สรุป price action 14-มิติ (เหมือน main._setup_line แต่ bot อ่าน env ตรง)"""
+    if not _SETUP_ON or getattr(s, "setup_score", None) is None or not getattr(s, "setup_factors", None):
+        return None
+    sign = f"+{s.setup_score}" if s.setup_score > 0 else str(s.setup_score)
+    parts = [("✅ " if f.get("delta", 0) > 0 else "⚠️ ") + f.get("text", "") for f in s.setup_factors[:5]]
+    return f"🧭 Setup {sign}: " + " · ".join(parts)
+
 
 def _trigger_scan_job(group: str | None = None) -> bool:
     """
@@ -235,6 +248,9 @@ def _format_single(s, resolved: Resolved, extra: str = "") -> str:
     tq = _trend_quality_line(s)  # คุณภาพเทรนด์ (R² เนียน/ขรุขระ)
     if tq:
         lines.append(tq)
+    su = _setup_block(s)  # 🧭 คะแนน setup (price action 14-มิติ)
+    if su:
+        lines.append(su)
 
     # breakdown ✅/❌ มีทั้งสองกรณี (RSI/Volume/ADX/EMA200 พร้อมความหมาย)
     for b in s.breakdown:
