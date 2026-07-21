@@ -301,10 +301,31 @@ def _top_picks_snapshot(signals: List[Signal], bar) -> list:
         scored.append((sc, parts, s))
     scored.sort(key=lambda t: -t[0])
 
+    # กระจายเซกเตอร์ — RS วัดเทียบทั้งตลาด เซกเตอร์ที่กำลังนำจะกวาดอันดับไปทั้งหมด
+    # ได้ Top 5 เซกเตอร์เดียว = เดิมพันก้อนเดียว และตัวเลขความเสี่ยงรวมจะต่ำกว่าจริง
+    # (สูตรแบ่งเงินคิดบนสมมติฐานว่าแต่ละตัวเป็นอิสระ ซึ่งผิดเมื่ออยู่เซกเตอร์เดียวกัน)
+    smap: dict = {}
+    try:
+        from universe.sector_map import sector_map, diversify
+        smap = sector_map()
+    except Exception as e:  # noqa: BLE001 — ไม่มี sector ก็ยังจัดอันดับได้ตามปกติ
+        log.warning("sector map ไม่พร้อม (%s) — ข้ามการกระจายเซกเตอร์", e)
+        diversify = None
+
+    max_per = int(os.getenv("MAX_PER_SECTOR", "2") or 2)
+    if diversify and smap:
+        top, used = diversify(scored, n, max_per,
+                              lambda t: smap.get(t[2].symbol))
+        log.info("กระจายเซกเตอร์ (≤%d ตัว/เซกเตอร์): %s", max_per,
+                 ", ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
+    else:
+        top = scored[:n]
+
     picks = []
-    for sc, parts, s in scored[:n]:
+    for sc, parts, s in top:
         picks.append({
             "symbol": s.symbol,
+            "sector": smap.get(s.symbol),
             # bar_date "รายตัว" ไม่ใช่ของ snapshot: ตัวกรอง stale ปล่อยผ่านได้ถึง 8 วัน
             # (max_stale_days_equity) หุ้นที่ feed ค้างจึงอาจติดอันดับด้วยแท่งเก่า
             # F3 ต้องผูก entry กับแท่งของมันเองไม่งั้นหน้าต่าง 5/10/20 แท่งเลื่อนแบบเงียบ ๆ
@@ -1654,6 +1675,8 @@ def run_premarket_report(cfg: Config) -> int:
             bits.append(str(p["stage_label"]))   # label มี "Stage N — ..." อยู่แล้ว ห้ามเติมซ้ำ
         if bits:
             L.append("   " + " · ".join(bits))
+        if p.get("sector"):
+            L.append(f"   🏷 {p['sector']}")
         if p.get("reasons"):
             L.append("   💡 " + " · ".join(p["reasons"]))
         atr = p.get("atr")
@@ -1682,6 +1705,16 @@ def run_premarket_report(cfg: Config) -> int:
             al.append("   ถ่วงด้วยระยะถึง SL → ตัวเหวี่ยงได้เงินน้อยลง เจ็บพอ ๆ กันทุกตัวถ้าโดน SL")
         if snap.get("total_risk_pct") is not None:
             al.append(f"   ⚠️ โดน SL ครบทุกตัว = เสีย ~{snap['total_risk_pct']:.1f}% ของก้อนนี้")
+        by: dict = {}
+        for p in picks:
+            if p.get("sector"):
+                by[p["sector"]] = by.get(p["sector"], 0) + (p.get("weight_pct") or 0)
+        if by:
+            al.append("   🏷 " + " · ".join(f"{k} {v}%" for k, v in
+                                            sorted(by.items(), key=lambda kv: -kv[1])))
+            top_sec, top_w = max(by.items(), key=lambda kv: kv[1])
+            if top_w >= 50:   # กลุ่มเดียวกันลงพร้อมกัน — เลขความเสี่ยงข้างบนคิดว่าเป็นอิสระ
+                al.append(f"   ⚠️ {top_sec} กินไป {top_w}% — เสี่ยงจริงสูงกว่าเลขข้างบน")
         parts.append("\n".join(al))
     parts.append("─────────\n"
                  "ราคาข้างบนคือ 'ราคาปิด' ของแท่งล่าสุด ไม่ใช่ราคาสด\n"

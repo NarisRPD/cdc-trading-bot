@@ -20,6 +20,53 @@ _UA = {
 }
 
 
+# ตารางที่ parse แล้ว เก็บไว้ต่อ URL — หน้าเดียวกันถูกใช้ทั้งดึง ticker และดึง sector
+# ไม่งั้นจะยิง Wikipedia ซ้ำสองรอบต่อ universe โดยไม่จำเป็น
+_TABLE_CACHE: dict = {}
+
+
+def _tables(url: str) -> list:
+    if url not in _TABLE_CACHE:
+        r = requests.get(url, headers=_UA, timeout=25)
+        r.raise_for_status()
+        _TABLE_CACHE[url] = pd.read_html(io.StringIO(r.text))
+    return _TABLE_CACHE[url]
+
+
+def _norm_ticker(v) -> str:
+    return str(v).strip().replace(".", "-")
+
+
+def _valid(t: str) -> bool:
+    return bool(t) and t.isascii() and 1 <= len(t) <= 8 and t.replace("-", "").isalnum()
+
+
+def fetch_wiki_sectors(url: str, *, name: str = "") -> dict:
+    """{ticker: GICS Sector} จากตารางเดียวกับที่ดึง ticker — ใช้ cache ร่วม ไม่ยิงเน็ตเพิ่ม
+
+    คืน {} ถ้าหน้าไม่มีคอลัมน์ sector หรือดึงไม่ได้ (ผู้เรียกต้องทนกับ map ว่างได้)
+    """
+    label = name or url
+    try:
+        for df in _tables(url):
+            cols = {str(c).strip().lower(): c for c in df.columns}
+            tcol = cols.get("symbol") or cols.get("ticker")
+            scol = cols.get("gics sector") or cols.get("sector")
+            if tcol is None or scol is None:
+                continue
+            out = {}
+            for t, s in zip(df[tcol], df[scol]):
+                tk, sec = _norm_ticker(t), str(s).strip()
+                if _valid(tk) and sec and sec.lower() != "nan":
+                    out.setdefault(tk, sec)
+            if out:
+                log.info("%s: ได้ sector %d ตัว", label, len(out))
+                return out
+    except Exception as e:  # noqa: BLE001
+        log.warning("ดึง sector ของ %s ไม่สำเร็จ (%s)", label, e)
+    return {}
+
+
 def fetch_wiki_tickers(
     url: str,
     static_fallback: List[str],
@@ -33,9 +80,7 @@ def fetch_wiki_tickers(
     """
     label = name or url
     try:
-        r = requests.get(url, headers=_UA, timeout=25)
-        r.raise_for_status()
-        tables = pd.read_html(io.StringIO(r.text))
+        tables = _tables(url)
         for df in tables:
             col = next(
                 (c for c in df.columns if str(c).strip().lower() in ("symbol", "ticker")),

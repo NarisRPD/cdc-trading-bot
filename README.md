@@ -108,6 +108,7 @@ red    = (not bull) and close <= fast  # Sell zone
 | `MIN_BARS_REQUIRED` | `60` | ขั้นต่ำเผื่อ ENABLE_EMA200_FILTER=false |
 | `TOP_PICKS_N` | `5` | จำนวนหุ้นใน `/top5` (คัดตอนสแกน US แล้วเก็บ snapshot) |
 | `ALLOC_SCORE_TILT` | `0.5` | สัดส่วนแบ่งเงินเอียงตามคะแนนแค่ไหน · `0` = ถ่วงด้วยความเสี่ยงล้วน |
+| `MAX_PER_SECTOR` | `2` | จำกัดหุ้นต่อเซกเตอร์ใน `/top5` · `1` = เข้มสุด · `0` = ปิด (เอาตามคะแนนล้วน) |
 | `PREMARKET_REPORT_ONLY` | `false` | โหมด job: ส่งรายงาน Top picks ก่อนตลาด US เปิด แล้วจบ |
 | `ENABLE_SELL_ALERTS` | `true` | เตือนควรขาย (ลงแรง / หลุด EMA26) เฉพาะเวลาตลาด US เปิด |
 | `SELL_DROP_PCT` | `5` | ร่วงกี่ % จากราคาปิดเมื่อวาน ถึงจะเตือน |

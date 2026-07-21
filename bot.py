@@ -1225,6 +1225,8 @@ def _handle_top5() -> str:
             bits.append(f"RSI {p['rsi']:.0f}")
         L.append("   " + " · ".join(bits))
 
+        if p.get("sector"):
+            L.append(f"   🏷 {p['sector']}")
         if p.get("reasons"):
             L.append("   💡 " + " · ".join(p["reasons"]))
 
@@ -1264,8 +1266,27 @@ def _alloc_note(snap: dict) -> str:
     if snap.get("total_risk_pct") is not None:
         L.append(f"   ⚠️ ถ้าโดน SL ครบทั้ง {len(snap.get('picks') or [])} ตัว = เสีย "
                  f"~{snap['total_risk_pct']:.1f}% ของก้อนนี้")
+    L.append(_sector_note(snap.get("picks") or []))
     L.append("   บอทไม่รู้เงินรวม/ของที่ถืออยู่ที่อื่นของคุณ — จะแบ่งมาเท่าไรคุณกำหนดเอง")
-    return "\n".join(L)
+    return "\n".join(x for x in L if x)
+
+
+def _sector_note(picks: list) -> str:
+    """สรุปว่าเงินกระจุกอยู่เซกเตอร์ไหน — ตัวเลขความเสี่ยงรวมข้างบนคิดว่าแต่ละตัวเป็นอิสระ
+    ถ้าเซกเตอร์เดียวกันหลายตัว มันจะลงพร้อมกัน = เสี่ยงจริงมากกว่าที่เลขบอก"""
+    by: dict = {}
+    for p in picks:
+        s = p.get("sector")
+        if s:
+            by[s] = by.get(s, 0) + (p.get("weight_pct") or 0)
+    if not by:
+        return ""
+    top_sec, top_w = max(by.items(), key=lambda kv: kv[1])
+    line = "🏷 กระจายเซกเตอร์: " + " · ".join(
+        f"{k} {v}%" for k, v in sorted(by.items(), key=lambda kv: -kv[1]))
+    if top_w >= 50:
+        line += f"\n   ⚠️ {top_sec} กินไป {top_w}% — กลุ่มเดียวกันมักลงพร้อมกัน เสี่ยงจริงสูงกว่าเลขข้างบน"
+    return line
 
 
 def _handle_picks() -> str:
