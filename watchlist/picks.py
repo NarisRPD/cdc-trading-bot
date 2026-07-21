@@ -16,6 +16,7 @@ watchlist/picks.py — ติดตามผลของ "คำแนะนำ 
 """
 from __future__ import annotations
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -27,20 +28,34 @@ _HORIZONS = (5, 10, 20)
 _MAX_ROWS = 600
 # แท่ง forward ไม่มาเกินเท่านี้ = feed สั้นจริง/หุ้นหยุดเทรด → ปิดแถว ไม่ค้างถาวร
 _HARD_EXPIRE_DAYS = 60
+# df ต้องยาวอย่างน้อยเท่านี้ถึงจะเชื่อว่า "แท่งเข้าหลุด window จริง" (รอบสแกนดึงมา 2 ปี ≈ 500 แท่ง)
+_TRUST_MIN_BARS = 250
+# ยิง fetch_history เดี่ยวได้กี่ตัวต่อรอบ — กันรอบสแกนยืดยาวตอน yfinance มีปัญหา
+_MAX_FETCH_FALLBACK = 5
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _load() -> list:
+def _load() -> Optional[list]:
+    """คืน list ที่โหลดได้ · คืน None เมื่อ "โหลดไม่สำเร็จ"
+
+    ต้องแยก 2 กรณีนี้ให้ขาด: ถ้าคืน [] ตอน GCS ล่ม แล้ว log_picks ไป append + save
+    ประวัติทั้งไฟล์จะถูกเขียนทับหายถาวร (blob ไม่มี versioning) — ผู้เรียกต้องเช็ก None เสมอ
+    """
     try:
         from watchlist import store
         rows = store.load_json(_FILE, [])
         return rows if isinstance(rows, list) else []
     except Exception as e:  # noqa: BLE001
         log.warning("picks: โหลดไม่สำเร็จ: %s", e)
-        return []
+        return None
+
+
+def _rows() -> list:
+    """สำหรับฝั่งอ่านอย่างเดียว (รายงาน) — โหลดพังก็คืนว่างได้ ไม่มีการเขียนทับ"""
+    return _load() or []
 
 
 def _save(rows: list) -> None:
@@ -58,13 +73,25 @@ def log_picks(picks: list, snap_bar_date=None) -> int:
     """
     if not picks:
         return 0
+    snap_bd = str(snap_bar_date)[:10] if snap_bar_date else None
+    if not snap_bd:
+        log.warning("picks: ไม่มี bar_date ของรอบสแกน — ข้าม")
+        return 0
     try:
         rows = _load()
+        if rows is None:                      # โหลดไม่สำเร็จ — ห้ามเขียน ไม่งั้นทับประวัติหมด
+            log.warning("picks: อ่านไฟล์เดิมไม่ได้ — ไม่บันทึกรอบนี้ (กันเขียนทับประวัติ)")
+            return 0
+        # dedup ระดับ "รอบสแกน" ไม่ใช่ระดับ symbol: ถ้าแท่งนี้บันทึกไปแล้วให้ข้ามทั้งชุด
+        # (ถ้า dedup ราย symbol อย่างเดียว การสแกนแท่งเดิมซ้ำที่ได้ Top N ต่างออกไป
+        #  จะแทรกแถวใหม่ที่มี rank ซ้ำกับของเดิม → ranks_at()/สถิติอันดับเพี้ยน)
+        if any(r.get("snap_bar_date") == snap_bd for r in rows):
+            return 0
         seen = {r.get("id") for r in rows}
         added = 0
         for rank, p in enumerate(picks, 1):
             sym = p.get("symbol")
-            bd = p.get("bar_date") or snap_bar_date
+            bd = p.get("bar_date") or snap_bd
             if not sym or not bd:
                 continue
             bd = str(bd)[:10]
@@ -75,7 +102,11 @@ def log_picks(picks: list, snap_bar_date=None) -> int:
             rows.append({
                 "id": rid,
                 "symbol": sym,
+                # bar_date = แท่งของหุ้นตัวนั้นเอง (ใช้กับหน้าต่าง forward 5/10/20 แท่ง)
+                # snap_bar_date = แท่งของ "รอบสแกน" (ใช้จัดกลุ่มว่ารอบไหนแนะนำอะไร)
+                # ต้องแยกกัน เพราะหุ้นที่ feed ค้างติดอันดับได้ด้วยแท่งเก่าถึง 8 วัน
                 "bar_date": bd,
+                "snap_bar_date": snap_bd,
                 "logged_at": _now_iso(),
                 "rank": rank,
                 "score": p.get("score"),
@@ -94,7 +125,7 @@ def log_picks(picks: list, snap_bar_date=None) -> int:
             added += 1
         if added:
             _save(rows)
-            log.info("picks: บันทึกคำแนะนำใหม่ %d ตัว (แท่ง %s)", added, str(snap_bar_date)[:10])
+            log.info("picks: บันทึกคำแนะนำใหม่ %d ตัว (แท่ง %s)", added, snap_bd)
         return added
     except Exception as e:  # noqa: BLE001 — ห้ามทำให้สแกนล่ม
         log.warning("picks: บันทึกไม่สำเร็จ: %s", e)
@@ -113,13 +144,17 @@ def evaluate(cfg, items: Optional[dict] = None, max_eval: int = 150) -> int:
         import pandas as pd
         from core import forward
         rows = _load()
-        if not rows:
+        if not rows:                      # None (โหลดพัง) หรือว่างจริง — ทั้งคู่ไม่มีอะไรให้ทำ
             return 0
         today = pd.Timestamp.utcnow().tz_localize(None).normalize()
         pending = [r for r in rows if not r.get("closed")][:max_eval]
         if not pending:
             return 0
 
+        # ถ้ารอบสแกนดึงข้อมูลมาได้น้อยผิดปกติ (yfinance กำลังมีปัญหา) อย่าไปไล่ยิงทีละตัวซ้ำเติม
+        items = items or {}
+        allow_fetch = len(items) >= 100
+        misses = 0
         cache: dict = {}
         touched = 0
         for r in pending:
@@ -128,28 +163,40 @@ def evaluate(cfg, items: Optional[dict] = None, max_eval: int = 150) -> int:
                 if sym in cache:
                     df = cache[sym]
                 else:
-                    df = (items or {}).get(sym)
-                    if df is None or getattr(df, "empty", True):
+                    df = items.get(sym)
+                    if (df is None or getattr(df, "empty", True)) and allow_fetch and misses < _MAX_FETCH_FALLBACK:
+                        misses += 1        # หลุด universe แล้ว — ยอมยิงเดี่ยว แต่จำกัดจำนวนต่อรอบ
                         from data.quote import fetch_history
                         df = fetch_history("us", sym)
                     cache[sym] = df
                 if df is None or df.empty or "open" not in df.columns:
                     continue
 
+                age = int((today - pd.Timestamp(r["bar_date"]).normalize()).days)
                 idx = forward.normalized_index(df)
                 start, status = forward.forward_start(idx, r["bar_date"])
                 if status == forward.IMPOSSIBLE:
-                    r["closed"] = True                      # แท่งเข้าหลุด window ของ feed — ประเมินไม่ได้ตลอดกาล
-                    r["evaluated_at"] = _now_iso()
-                    touched += 1
+                    # แท่งเข้าอยู่ก่อน window ของ feed — แต่ปิดแถวทันทีไม่ได้:
+                    # บางรอบ yfinance คืน df สั้นผิดปกติ (ฝั่ง batch ไม่มีด่านความยาวขั้นต่ำ)
+                    # ถ้าปิดเลย แถวจะหลุดจากการติดตามถาวรทั้งที่รอบหน้าข้อมูลกลับมาครบ
+                    # → ปิดเมื่อ df ยาวพอจะเชื่อได้ หรือแก่เกิน hard-expire (กันค้างถาวร)
+                    if len(df) >= _TRUST_MIN_BARS or age >= _HARD_EXPIRE_DAYS:
+                        r["closed"] = True
+                        r["evaluated_at"] = _now_iso()
+                        touched += 1
                     continue
                 if status != forward.OK:
+                    if age >= _HARD_EXPIRE_DAYS:            # แท่ง forward ไม่มาเสียที — เลิกรอ
+                        r["closed"] = True
+                        r["evaluated_at"] = _now_iso()
+                        touched += 1
                     continue                                # ยังไม่มีแท่ง forward — รอรอบหน้า
 
                 if r.get("entry_open") is None and start < len(df):
-                    r["entry_open"] = round(float(df["open"].iloc[start]), 4)
+                    _op = float(df["open"].iloc[start])
+                    if math.isfinite(_op):                  # NaN ห้ามเก็บ — จะพิษไปทั้งสถิติ
+                        r["entry_open"] = round(_op, 4)
 
-                age = int((today - pd.Timestamp(r["bar_date"]).normalize()).days)
                 avail = max(0, len(df) - start)
                 got = False
                 for h in _HORIZONS:
@@ -189,7 +236,7 @@ def _ret(r: dict, h: int) -> Optional[float]:
 
 def summary() -> str:
     """สถิติ 'คำแนะนำแม่นแค่ไหน' — ป้อน /picks"""
-    rows = _load()
+    rows = _rows()
     if not rows:
         return "🎯 ยังไม่มีประวัติคำแนะนำ — บอทจะเริ่มเก็บตั้งแต่รอบสแกนถัดไป"
 
@@ -210,17 +257,17 @@ def summary() -> str:
         L.append("• ยังไม่มีรายการไหนครบ 5 แท่ง — รออีกสักพัก")
         return "\n".join(L)
 
-    # อันดับ 1-2 ดีกว่าอันดับ 3-5 จริงไหม = คะแนนใช้ได้จริงหรือเปล่า
-    top, rest = [], []
-    for r in rows:
-        v = _ret(r, 10) if _ret(r, 10) is not None else _ret(r, 5)
-        if v is None:
-            continue
-        (top if (r.get("rank") or 9) <= 2 else rest).append(v)
-    if top and rest:
-        L.append(f"\n📊 อันดับใช้ได้จริงไหม (ถือ 10 แท่ง)\n"
-                 f"   อันดับ 1-2: เฉลี่ย {sum(top)/len(top):+.1f}% (n={len(top)})\n"
-                 f"   อันดับ 3-5: เฉลี่ย {sum(rest)/len(rest):+.1f}% (n={len(rest)})")
+    # อันดับต้นดีกว่าอันดับท้ายจริงไหม = คะแนนใช้ได้จริงหรือเปล่า
+    # ต้องใช้ horizon เดียวทั้งกลุ่ม ห้าม fallback ไป 5 แท่งเมื่อ 10 แท่งยังไม่ครบ
+    # (ผล 5 แท่งเล็กกว่าโดยธรรมชาติ ปนแล้วค่าเฉลี่ยจะต่ำกว่าจริงและเทียบข้ามวันไม่ได้)
+    for h in (10, 5):
+        top = [v for r in rows if (v := _ret(r, h)) is not None and (r.get("rank") or 9) <= 2]
+        rest = [v for r in rows if (v := _ret(r, h)) is not None and (r.get("rank") or 9) > 2]
+        if top and rest:
+            L.append(f"\n📊 อันดับใช้ได้จริงไหม (ถือ {h} แท่ง)\n"
+                     f"   อันดับ 1-2: เฉลี่ย {sum(top)/len(top):+.1f}% (n={len(top)})\n"
+                     f"   อันดับ 3 ลงไป: เฉลี่ย {sum(rest)/len(rest):+.1f}% (n={len(rest)})")
+            break
 
     L.append("\n─────────\n"
              "วัด 'คำแนะนำ Top N' โดยเข้าที่ราคาเปิดแท่งถัดไป แล้วถือครบจำนวนแท่ง (ไม่มี SL/TP)\n"
@@ -229,17 +276,20 @@ def summary() -> str:
 
 
 def recent_bars(n: int = 2) -> list:
-    """bar_date ที่เคยบันทึกไว้ ใหม่→เก่า สูงสุด n ตัว — ไว้หา 'รอบก่อนหน้า' ของจริง
-    (อย่าใช้ 'เมื่อวาน' ตามนาฬิกา: เสาร์อาทิตย์/วันหยุดตลาดจะเทียบผิดวัน)"""
-    return sorted({r.get("bar_date") for r in _load() if r.get("bar_date")}, reverse=True)[:n]
+    """แท่งของ 'รอบสแกน' ที่เคยบันทึก ใหม่→เก่า สูงสุด n ตัว — ไว้หารอบก่อนหน้าของจริง
+    (อย่าใช้ 'เมื่อวาน' ตามนาฬิกา: เสาร์อาทิตย์/วันหยุดตลาดจะเทียบผิดวัน
+     และต้องใช้ snap_bar_date ไม่ใช่ bar_date รายตัว ไม่งั้นหุ้น feed ค้างตัวเดียว
+     จะสร้าง 'รอบ' ปลอมขึ้นมาแล้วป้ายอันดับ ▲▼/🆕/📤 ผิดทั้งใบ)"""
+    return sorted({r.get("snap_bar_date") for r in _rows() if r.get("snap_bar_date")},
+                  reverse=True)[:n]
 
 
-def ranks_at(bar_date: str) -> dict:
-    """{symbol: rank} ของแท่งที่ระบุ — ไว้ diff อันดับระหว่างรอบ"""
-    return {r["symbol"]: r.get("rank") for r in _load()
-            if r.get("bar_date") == bar_date and r.get("symbol")}
+def ranks_at(snap_bar_date: str) -> dict:
+    """{symbol: rank} ของรอบสแกนที่ระบุ — ไว้ diff อันดับระหว่างรอบ"""
+    return {r["symbol"]: r.get("rank") for r in _rows()
+            if r.get("snap_bar_date") == snap_bar_date and r.get("symbol")}
 
 
 def active(limit: int = 12) -> list:
     """แถวที่ยังติดตามอยู่ (ยังไม่ปิด) ใหม่สุดก่อน — ไว้โชว์ใน /picks"""
-    return [r for r in reversed(_load()) if not r.get("closed")][:limit]
+    return [r for r in reversed(_rows()) if not r.get("closed")][:limit]

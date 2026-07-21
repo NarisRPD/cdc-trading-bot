@@ -1212,6 +1212,10 @@ def _handle_top5() -> str:
         L = [f"{i}. {p['symbol']}  {band} {sc:.0f}/100  {zone_label(p.get('zone') or '')}"]
 
         bits = [f"ปิด ${_fmt_price(p.get('price'))}"]
+        # หุ้นที่ feed ค้างติดอันดับได้ด้วยแท่งเก่าถึง 8 วัน (max_stale_days_equity)
+        # ต้องบอกให้เห็น ไม่งั้นผู้ใช้วางออร์เดอร์จากราคา/SL ที่ล้าสมัย
+        if p.get("bar_date") and str(p["bar_date"])[:10] != str(snap.get("bar_date") or "")[:10]:
+            bits.append(f"⏳ แท่ง {str(p['bar_date'])[:10]} (feed ค้าง)")
         if p.get("rs_rank") is not None:
             bits.append(f"RS {p['rs_rank']:.0f}")
         if p.get("stage_label"):

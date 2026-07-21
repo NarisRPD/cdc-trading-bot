@@ -8,6 +8,7 @@ core/forward.py — ตรรกะ "หาแท่งถัดจากแท�
 pure logic: ไม่มี I/O · ไม่แตะ store/network
 """
 from __future__ import annotations
+import math
 from typing import Optional, Tuple
 
 import pandas as pd
@@ -77,12 +78,14 @@ def forward_return(df: pd.DataFrame, start: int, horizon: int) -> Optional[dict]
         return None
     try:
         entry = float(win["open"].iloc[0])
-        if entry <= 0:
-            return None
         exit_px = float(win["close"].iloc[-1])
         peak = float(win["high"].astype(float).max())
         trough = float(win["low"].astype(float).min())
     except (KeyError, ValueError, TypeError):
+        return None
+    # ต้องเช็ก isfinite ไม่ใช่แค่ <= 0: NaN เทียบยังไงก็ False (nan <= 0 → False) จะรอดด่านไปได้
+    # แล้ว ret_pct กลายเป็น nan ซึ่งพิษไปทั้งค่าเฉลี่ยของ /picks ถาวร (ปนแถวเดียวก็ nan ทั้งกระดาน)
+    if not all(math.isfinite(v) for v in (entry, exit_px, peak, trough)) or entry <= 0:
         return None
     return {
         "entry": round(entry, 4),

@@ -90,6 +90,21 @@ def test_forward_return() -> None:
     check("แท่งไม่พอ → None", forward.forward_return(df, 1, 5), None)
     check("start เกิน df → None", forward.forward_return(df, 99, 1), None)
 
+    # NaN ต้องไม่รอดด่าน: `nan <= 0` เป็น False จึงกันด้วย <=0 อย่างเดียวไม่ได้
+    # ถ้ารอดไปจะได้ ret_pct=nan แล้วค่าเฉลี่ยของ /picks เป็น nan ทั้งกระดานถาวร
+    df_nan = _df(days,
+                 opens=[100, float("nan"), 112, 118],
+                 highs=[101, 115, 120, 125],
+                 lows=[99, 108, 111, 117],
+                 closes=[100, 112, 118, 121])
+    check("open เป็น NaN → None (ไม่ปล่อย nan เข้าสถิติ)", forward.forward_return(df_nan, 1, 3), None)
+    df_nan2 = _df(days, [100, 110, 112, 118], [101, 115, 120, 125],
+                  [99, 108, 111, 117], [100, 112, 118, float("nan")])
+    check("close เป็น NaN → None", forward.forward_return(df_nan2, 1, 3), None)
+    df_zero = _df(days, [100, 0.0, 112, 118], [101, 115, 120, 125],
+                  [99, 108, 111, 117], [100, 112, 118, 121])
+    check("open = 0 → None", forward.forward_return(df_zero, 1, 3), None)
+
     print("\n[3] still_pending — ค้างไว้ vs ยอมปิด")
     check("แท่งไม่ครบ + ยังไม่แก่ → ค้าง", forward.still_pending(3, 5, 10, 60), True)
     check("แท่งไม่ครบ + แก่เกิน → ปิด", forward.still_pending(3, 5, 61, 60), False)
@@ -129,6 +144,31 @@ def test_picks() -> None:
     check("recent_bars ใหม่→เก่า", picks.recent_bars(2), [bd_next, bd])
     check("ranks_at", picks.ranks_at(bd), {"AAA": 1, "BBB": 2})
 
+    # สแกนแท่งเดิมซ้ำแล้วได้ Top N คนละหน้า → ต้องข้ามทั้งชุด ไม่ใช่แทรกแถวที่ rank ซ้ำ
+    check("สแกนแท่งเดิมซ้ำแต่ชุดต่างออกไป → ไม่เพิ่มแถว",
+          picks.log_picks([{"symbol": "ZZZ", "bar_date": bd, "score": 90, "price": 9.0}], bd), 0)
+    check("ranks_at ยังไม่มี rank ซ้ำ", sorted(picks.ranks_at(bd).values()), [1, 2])
+
+    # หุ้น feed ค้าง: bar_date รายตัวเก่ากว่าแท่งของรอบ → ต้องไม่สร้าง 'รอบ' ปลอม
+    bd3 = (bd_ts + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+    stale_bd = (bd_ts - pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+    picks.log_picks([{"symbol": "AAA", "bar_date": bd3, "score": 80, "price": 100.0},
+                     {"symbol": "OLD", "bar_date": stale_bd, "score": 79, "price": 12.0}], bd3)
+    check("recent_bars อิงแท่งของรอบสแกน ไม่ใช่ bar_date รายตัว",
+          picks.recent_bars(3), [bd3, bd_next, bd])
+    check("หุ้น feed ค้างยังถูกจัดอยู่ในรอบที่ถูกต้อง", picks.ranks_at(bd3), {"AAA": 1, "OLD": 2})
+
+    print("\n[4b] log_picks — โหลดไฟล์เดิมไม่ได้ ห้ามเขียนทับประวัติ")
+    import watchlist.store as _st
+    _orig = _st.load_json
+    _st.load_json = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("GCS 503"))
+    saved = []
+    _orig_save = _st.save_json
+    _st.save_json = lambda name, data: saved.append(data)
+    check("โหลดพัง → คืน 0 และไม่เรียก save", picks.log_picks(p, bd_next), 0)
+    check("ไม่มีการเขียนไฟล์เลย", len(saved), 0)
+    _st.load_json, _st.save_json = _orig, _orig_save
+
     print("\n[5] evaluate — เติมผลตามจำนวนแท่งที่มีจริง")
     # หลังแท่งสัญญาณมี 6 แท่ง → r5 ได้ · r10/r20 ต้องค้าง (แท่งไม่พอ แต่ยังไม่แก่เกิน 60 วัน)
     days = pd.date_range(bd, periods=7, freq="D")
@@ -147,12 +187,19 @@ def test_picks() -> None:
     check("ยังไม่ปิดแถว", aaa.get("closed"), False)
     check("จำนวนแถวไม่เปลี่ยนจากการ evaluate", len(rows), rows_before)
 
-    print("\n[6] evaluate — แท่งเข้าหลุด window → ปิดแถว ไม่ค้างถาวร")
-    late = pd.date_range(_TODAY - pd.Timedelta(days=1), periods=3, freq="D")
-    df_late = _df(late, [10] * 3, [11] * 3, [9] * 3, [10] * 3)
-    picks.evaluate(cfg=None, items={"AAA": df_late, "BBB": df_late})
+    print("\n[6] evaluate — แท่งเข้าหลุด window: ปิดเฉพาะเมื่อ df ยาวพอจะเชื่อได้")
+    # df สั้น (yfinance คืนไม่ครบชั่วคราว) → ห้ามปิดแถว ไม่งั้นหลุดการติดตามถาวร
+    short = pd.date_range(_TODAY - pd.Timedelta(days=1), periods=3, freq="D")
+    df_short = _df(short, [10] * 3, [11] * 3, [9] * 3, [10] * 3)
+    picks.evaluate(cfg=None, items={"AAA": df_short, "BBB": df_short})
     bbb = [r for r in rows if r["id"] == f"BBB|{bd}"][0]
-    check("bar_date ก่อนทั้ง window → closed", bbb.get("closed"), True)
+    check("df สั้น → ยังไม่ปิด (รอข้อมูลกลับมาครบ)", bbb.get("closed"), False)
+
+    # df ยาวจริง (≥250 แท่ง) แล้วยังไม่ครอบ bar_date → แท่งเข้าหลุด window จริง ปิดได้
+    long_idx = pd.date_range(_TODAY - pd.Timedelta(days=1), periods=260, freq="D")
+    df_long = _df(long_idx, [10] * 260, [11] * 260, [9] * 260, [10] * 260)
+    picks.evaluate(cfg=None, items={"AAA": df_long, "BBB": df_long})
+    check("df ยาวพอ + แท่งเข้าหลุด window → closed", bbb.get("closed"), True)
 
     print("\n[7] summary — ไม่ล่มและมีตัวเลข")
     s = picks.summary()

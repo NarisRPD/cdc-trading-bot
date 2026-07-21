@@ -64,6 +64,10 @@ def send_telegram(msg: str, **kwargs) -> bool:
         log.info("ข้ามแจ้งเตือน — เสาร์/อาทิตย์ (ALERTS_SKIP_WEEKEND) · %.50s",
                  (msg or "").replace("\n", " "))
         return True   # ถือว่าสำเร็จ — ตัวเรียกจะได้ไม่นับ fail/ไม่ retry
+    # เติม credential ให้เองถ้าผู้เรียกลืมส่ง — sender จริงประกาศ token/chat_id เป็น keyword-only
+    # ที่ไม่มีดีฟอลต์ ลืมทีเดียวได้ TypeError กลางทาง (เคยทำให้รายงาน premarket ตายเงียบทั้งฟีเจอร์)
+    kwargs.setdefault("token", os.getenv("TELEGRAM_BOT_TOKEN", "").strip())
+    kwargs.setdefault("chat_id", os.getenv("TELEGRAM_CHAT_ID", "").strip())
     return _send_telegram_raw(msg, **kwargs)
 
 
@@ -1595,12 +1599,22 @@ def run_premarket_report(cfg: Config) -> int:
 
     # เขียน state ให้สำเร็จ "ก่อน" ส่ง — รายงานวันละครั้ง ยอมพลาด 1 วันดีกว่าสแปมซ้ำหลายใบ
     # (Cloud Run retry ทั้ง container ได้ ถ้า mark ทีหลังจะได้รายงานซ้ำ)
+    # ถ้าส่งไม่ผ่านจะ rollback state คืน (ดูท้ายฟังก์ชัน) ไม่งั้นแท่งนั้นจะถูก "เผา" ถาวร
+    prev_state = dict(state)
     try:
         store.save_json(_PREMARKET_STATE, {"last_bar_date": bd,
                                            "marked_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     except Exception as e:  # noqa: BLE001
         log.warning("premarket: เขียน state ไม่สำเร็จ (%s) — งดส่งรอบนี้ กันส่งซ้ำ", e)
         return 1
+
+    def _rollback(why: str) -> None:
+        """คืน state เดิมเมื่อส่งไม่สำเร็จ — ให้รอบถัดไป (หรือวันถัดไป) ลองใหม่ได้"""
+        try:
+            store.save_json(_PREMARKET_STATE, prev_state)
+            log.warning("premarket: ส่งไม่สำเร็จ (%s) — คืน state เดิมแล้ว จะลองใหม่รอบหน้า", why)
+        except Exception as e2:  # noqa: BLE001
+            log.error("premarket: ส่งไม่สำเร็จ (%s) และคืน state ไม่ได้ (%s) — แท่ง %s จะไม่ถูกส่ง", why, e2, bd)
 
     prev_bars = [b for b in picks_log.recent_bars(4) if b < bd]
     prev = picks_log.ranks_at(prev_bars[0]) if prev_bars else {}
@@ -1651,9 +1665,17 @@ def run_premarket_report(cfg: Config) -> int:
                  "ราคาข้างบนคือ 'ราคาปิด' ของแท่งล่าสุด ไม่ใช่ราคาสด\n"
                  "ดูอันดับล่าสุด /top5 · ผลย้อนหลังของคำแนะนำ /picks")
 
-    ok = send_telegram("\n\n".join(parts))
-    log.info("premarket: ส่ง %s (แท่ง %s, %d ตัว)", ok, bd, len(picks))
-    return 0 if ok else 1
+    try:
+        ok = send_telegram("\n\n".join(parts), token=cfg.telegram_bot_token,
+                           chat_id=cfg.telegram_chat_id, timeout=cfg.http_timeout_sec)
+    except Exception as e:  # noqa: BLE001
+        _rollback(repr(e))
+        raise
+    if not ok:
+        _rollback("sender คืน False")
+        return 1
+    log.info("premarket: ส่งแล้ว (แท่ง %s, %d ตัว)", bd, len(picks))
+    return 0
 
 
 def _briefing_due() -> bool:
