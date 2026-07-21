@@ -273,6 +273,58 @@ def run_crypto(cfg: Config) -> GroupResult:
                        stale=stale, fetch_failed=skipped_fetch, universe=len(symbols))
 
 
+_TOP5_FILE = "top5_latest.json"
+
+
+def _top_picks_snapshot(signals: List[Signal], bar) -> None:
+    """คัด 'หุ้น US น่าถือรันเทรนด์' จากสัญญาณที่สแกนเสร็จแล้ว → เซฟไว้ให้ /top5 อ่าน
+
+    ทำตอนสแกนรอบปกติ (ไม่ยิง Telegram) เพราะข้อมูลครบอยู่แล้ว = ไม่ต้องดึงซ้ำ 1,100 ตัว
+    ถ้าพังต้อง *ไม่* ทำให้สแกนหลักล่ม → ห่อ try ทั้งก้อนที่ผู้เรียก
+    """
+    from core import ranking
+    from watchlist import store
+
+    n = int(os.getenv("TOP_PICKS_N", "5"))
+    scored = []
+    for s in signals:
+        if not ranking.passes_gate(s):
+            continue
+        sc, parts = ranking.buy_score(s)
+        scored.append((sc, parts, s))
+    scored.sort(key=lambda t: -t[0])
+
+    picks = []
+    for sc, parts, s in scored[:n]:
+        picks.append({
+            "symbol": s.symbol,
+            "score": sc,
+            "parts": parts,
+            "reasons": ranking.top_reasons(parts),
+            "late": ranking.late_flags(s),
+            "zone": s.zone,
+            "price": s.close,
+            "rsi": s.rsi,
+            "rs_rank": s.rs_rank,
+            "adx": s.adx,
+            "atr": s.atr,
+            "ext_atr": s.ext_atr,
+            "bars_in_zone": s.bars_in_zone,
+            "stage": (s.stage or {}).get("n"),
+            "stage_label": (s.stage or {}).get("label"),
+            "setup_score": s.setup_score,
+        })
+
+    store.save_json(_TOP5_FILE, {
+        "bar_date": str(bar) if bar else None,
+        "pool": len(scored),          # ผ่านด่านคัดกี่ตัว (ไว้ดูว่าตลาดกว้างแค่ไหน)
+        "scanned": len(signals),
+        "picks": picks,
+    })
+    log.info("Top picks: pool=%d → เก็บ %d ตัว (%s)", len(scored), len(picks),
+             ", ".join(p["symbol"] for p in picks) or "-")
+
+
 def run_us_stocks(cfg: Config) -> GroupResult:
     log.info("=== US Stocks (S&P500 + NASDAQ100 + S&P600) ===")
     # รวม 3 ดัชนี dedup: S&P500 (ใหญ่) + NASDAQ-100 (เทค) + S&P600 (เล็กที่กำไรแล้ว)
@@ -288,6 +340,10 @@ def run_us_stocks(cfg: Config) -> GroupResult:
     if cfg.enable_reversal_watch:
         reversal = _enrich_reversal(reversal, items, cfg)
     bar = max((s.bar_date for s in signals), default=None)
+    try:  # เก็บ Top picks ไว้ให้ /top5 — ห้ามทำให้สแกนหลักล่ม
+        _top_picks_snapshot(signals, bar)
+    except Exception as e:  # noqa: BLE001
+        log.warning("top picks snapshot failed: %s", e)
     fetch_failed = len(tickers) - len(items)
     log.info("US Stocks: scanned=%d, fetch_failed=%d, stale=%d, buy=%d, sell=%d",
              ok, fetch_failed, stale, len(buys), len(sells))

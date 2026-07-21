@@ -106,6 +106,7 @@ red    = (not bull) and close <= fast  # Sell zone
 | `MIN_SCORE_TO_ALERT` | `0` | 0 = รายงานทุกสัญญาณ |
 | `ENABLE_EMA200_FILTER` | `true` | คำนวณ EMA200 (ต้องการ ≥200 แท่ง) |
 | `MIN_BARS_REQUIRED` | `60` | ขั้นต่ำเผื่อ ENABLE_EMA200_FILTER=false |
+| `TOP_PICKS_N` | `5` | จำนวนหุ้นใน `/top5` (คัดตอนสแกน US แล้วเก็บ snapshot) |
 | `DRY_RUN` | `false` | ไม่ส่ง Telegram แค่ log |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` |
 

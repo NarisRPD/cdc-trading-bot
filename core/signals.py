@@ -83,6 +83,8 @@ class Signal:
     trend_q: Optional[dict] = None  # คุณภาพเทรนด์ {r2, up} — R² regression ราคา (เนียน vs ขรุขระ)
     setup_score: Optional[int] = None  # คะแนน setup quality (price action 14-มิติ) — ปรับ "อันดับ"
     setup_factors: Optional[list] = None  # [{key,delta,text}] ปัจจัยที่ติด — ไว้โชว์ 🧭 Setup
+    ext_atr: Optional[float] = None  # |close−EMA12| / ATR = ยืดจากเส้นกี่ ATR (น้อย=ต้นเทรนด์ · มาก=ปลาย)
+    bars_in_zone: Optional[int] = None  # อยู่โซนปัจจุบันมากี่แท่งติดกัน (น้อย=เพิ่งพลิก=ต้นเทรนด์)
 
     def stars(self) -> str:
         return "⭐" * self.score + f" ({self.score}/4)" if self.score > 0 else "(0/4)"
@@ -514,10 +516,30 @@ def compute_signal(
     tq = trend_quality(close)       # คุณภาพเทรนด์ (R²) — ใช้ทั้งโชว์และเป็น penalty ของ setup
 
     # Setup quality (price action 14-มิติ) — คำนวณเมื่อมีทิศประเมิน + เปิดใช้ (กัน CPU เปล่าตอนปิดฟีเจอร์)
+    # ระยะยืดจาก EMA12 (หน่วย ATR) — ใช้ทั้ง setup_quality และคะแนน "ต้นเทรนด์" (core/ranking.py)
+    # ย้ายออกมานอก if เพื่อให้มีค่าเสมอ (เดิมคำนวณเฉพาะตอนเปิด setup_quality)
+    ext = (abs(close_v - float(fast.iloc[-1])) / atr_last) \
+        if (atr_last and not pd.isna(fast.iloc[-1])) else None
+
+    # อยู่โซนปัจจุบันมากี่แท่งติดกัน — เพิ่งเข้าโซน = ต้นเทรนด์
+    # ใช้ numpy ล้วน + จำกัด 60 แท่ง (pandas .iloc ในลูปช้าเกินเมื่อคูณ ~1,100 ตัว)
+    bars_in_zone = None
+    try:
+        _n = min(len(df), 60)
+        _c, _f, _s = close.to_numpy()[-_n:], fast.to_numpy()[-_n:], slow.to_numpy()[-_n:]
+        _cnt = 0
+        for _i in range(_n - 1, -1, -1):
+            if pd.isna(_c[_i]) or pd.isna(_f[_i]) or pd.isna(_s[_i]):
+                break
+            if _zone_from_row(float(_c[_i]), float(_f[_i]), float(_s[_i])) != zone_now:
+                break
+            _cnt += 1
+        bars_in_zone = _cnt or None
+    except Exception:  # noqa: BLE001
+        bars_in_zone = None
+
     setup = None
     if compute_setup and eval_is_buy is not None:
-        ext = (abs(close_v - float(fast.iloc[-1])) / atr_last) \
-            if (atr_last and not pd.isna(fast.iloc[-1])) else None
         setup = setup_quality(df, eval_is_buy, atr_val=atr_last,
                               trend_q_r2=(tq or {}).get("r2"), ext_atr=ext)
 
@@ -546,4 +568,6 @@ def compute_signal(
         trend_q=tq,
         setup_score=(setup or {}).get("score"),
         setup_factors=(setup or {}).get("factors"),
+        ext_atr=ext,
+        bars_in_zone=bars_in_zone,
     )

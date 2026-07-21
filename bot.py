@@ -1190,6 +1190,59 @@ def _position_block(pos: dict) -> str:
     return "\n".join(lines)
 
 
+_TOP5_FILE = "top5_latest.json"
+
+
+def _handle_top5() -> str:
+    """🏆 หุ้น US น่าถือรันเทรนด์ — อ่าน snapshot ที่รอบสแกน (main.py) คัดไว้แล้ว
+    ไม่ดึงข้อมูลใหม่ → ตอบทันที ไม่กิน quota"""
+    snap = store.load_json(_TOP5_FILE, {}) or {}
+    picks = snap.get("picks") or []
+    if not picks:
+        return ("🏆 ยังไม่มีอันดับ — รอบสแกนถัดไปจะคัดให้\n"
+                "(บอตสแกนหุ้น US ทุก ~10 นาทีในเวลาตลาด · ลองใหม่อีกครั้งภายหลัง)")
+
+    head = (f"🏆 Top {len(picks)} หุ้น US น่าถือรันเทรนด์\n"
+            f"แท่งปิด {str(snap.get('bar_date') or '-')[:10]} · "
+            f"สแกน {snap.get('scanned', 0):,} ตัว → ผ่านด่าน {snap.get('pool', 0)} ตัว")
+
+    blocks = []
+    for i, p in enumerate(picks, 1):
+        sc = p.get("score") or 0
+        band = "🟩" if sc >= 70 else ("🟨" if sc >= 55 else "⬜")
+        L = [f"{i}. {p['symbol']}  {band} {sc:.0f}/100  {zone_label(p.get('zone') or '')}"]
+
+        bits = [f"${_fmt_price(p.get('price'))}"]
+        if p.get("rs_rank") is not None:
+            bits.append(f"RS {p['rs_rank']:.0f}")
+        if p.get("stage_label"):
+            bits.append(f"Stage {p.get('stage')} {p['stage_label']}")
+        if p.get("rsi") is not None:
+            bits.append(f"RSI {p['rsi']:.0f}")
+        L.append("   " + " · ".join(bits))
+
+        if p.get("reasons"):
+            L.append("   💡 " + " · ".join(p["reasons"]))
+
+        # จุดเข้า/คัตลอส — อิง EMA12 (ext_atr) และ ATR ตัวจริง
+        price, atr = p.get("price"), p.get("atr")
+        if price and atr:
+            sl = price - 2.0 * atr
+            L.append(f"   🎯 เข้า ≤ ${_fmt_price(price + 0.3 * atr)} · "
+                     f"SL ${_fmt_price(sl)} ({(sl / price - 1) * 100:+.1f}%)")
+
+        if p.get("late"):
+            L.append("   ⚠️ " + " · ".join(p["late"]))
+        blocks.append("\n".join(L))
+
+    foot = ("─────────\n"
+            "🟩 ≥70 น่าเข้า · 🟨 55-69 เฝ้าดู · ⬜ <55 รอจังหวะ\n"
+            "คะแนน = ต้นเทรนด์ 40 + RS 20 + Stage 18 + setup 15 + แรงเงิน 7 − หักปลายเทรนด์\n"
+            "⚠️ = สัญญาณปลายเทรนด์ (ไล่ราคาเสี่ยง/ถือแล้วพิจารณาขาย)\n"
+            "เปิดสถานะจริงด้วย /buy SYM us")
+    return head + "\n\n" + "\n\n".join(blocks) + "\n\n" + foot
+
+
 def _handle_list() -> str:
     positions = store.list_positions()
     if not positions:
@@ -1225,6 +1278,7 @@ _HELP = (
     "• /callsell SYM [ตลาด] — ปิด Call\n"
     "• /putsell SYM [ตลาด] — ปิด Put\n\n"
     "จัดการ:\n"
+    "• /top5 — 🏆 หุ้น US น่าถือรันเทรนด์ 5 อันดับ (ต้นเทรนด์ = น่าเข้า · ปลายเทรนด์ = เตือน)\n"
     "• /list — ดูทุกตัว + %P/L + โซน + SL/TP\n"
     "• /scan — สแกนทั้ง 4 กลุ่ม | /scan crypto|usstocks|thaistocks|commodity\n"
     "• /scan SYM — เช็กตัวเดียว ตอบทันที (เช่น /scan AAPL, /scan BTC, /scan PTT.BK)\n"
@@ -1277,6 +1331,8 @@ def _dispatch(text: str) -> str:
         return _handle_close(cmd, args)
     if cmd == "list":
         return _handle_list()
+    if cmd in ("top5", "top"):
+        return _handle_top5()
     if cmd == "scan":
         return _handle_scan(args)
     if cmd == "edit":
