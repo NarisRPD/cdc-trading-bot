@@ -251,6 +251,56 @@ def _quality_parts(d: dict) -> tuple:
     return parts, verdict, (score, n)
 
 
+def _norm_gate_metric(m: dict) -> dict:
+    """แปลง metric ของ Finnhub → dict ที่ growth_verdict ใช้ (pure — เทสได้ offline)
+
+    ระวังหน่วยไม่เหมือนกัน:
+      · marketCapitalization = "ล้าน$" อยู่แล้ว → ใช้ตรง ๆ
+      · netProfitMarginTTM ของ Finnhub เป็น "เปอร์เซ็นต์" (12.3 = 12.3%)
+        แต่ growth_verdict รับ "สัดส่วน" (0.123) ตามหน่วยของ FMP → หาร 100
+        (การตัดสิน pass/fail ใช้แค่เครื่องหมาย จึงไม่พังต่อให้หน่วยพลาด —
+         แต่ข้อความ "margin X%" ที่โชว์ผู้ใช้จะเพี้ยน 100 เท่า ถ้าไม่แปลง)
+      · revenueGrowthTTMYoy เป็นเปอร์เซ็นต์ทั้งคู่ → ใช้ตรง ๆ
+    """
+    out: dict = {}
+    if m.get("marketCapitalization") is not None:
+        out["mcap_m"] = m.get("marketCapitalization")
+    if m.get("revenueGrowthTTMYoy") is not None:
+        out["rev_g"] = m.get("revenueGrowthTTMYoy")
+    nm = m.get("netProfitMarginTTM")
+    if nm is not None:
+        try:
+            out["net_margin"] = round(float(nm) / 100.0, 4)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def growth_snapshot(symbol: str) -> dict:
+    """ข้อมูลขั้นต่ำสำหรับด่านคัด /top5 — **1 API call** ต่อหุ้น (ไม่ใช่ 7 แบบ fundamentals())
+
+    ทำไมแยกจาก fundamentals(): ด่านคัดเช็ก ~40 ตัวต่อรอบ ถ้าใช้ตัวเต็ม (7 calls/ตัว)
+    = ~280 calls ชน rate limit Finnhub free (60/นาที) แล้วผลว่างจะถูก cache 12 ชม.
+    → ด่านพื้นฐานเป็นอัมพาตทั้งวันตั้งแต่รอบแรก
+
+    cache แยก namespace "gate:" — ไม่ปนกับ cache ของ fundamentals() เพราะข้อมูลไม่ครบเท่า
+    ดึงไม่ได้/โดน 429 → คืน {} และ **ไม่ cache** (ไม่แช่ความว่างไว้ 12 ชม. รอบหน้าลองใหม่)
+    """
+    key = f"gate:{symbol}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    if not enabled():
+        return {}
+    met = _fh("/stock/metric", {"symbol": symbol, "metric": "all"})
+    if not isinstance(met, dict):
+        return {}
+    d = _norm_gate_metric(met.get("metric", {}) or {})
+    if d:                       # มีข้อมูลจริงค่อย cache — ว่างเปล่าไม่แช่
+        _cache_put(key, d)
+    return d
+
+
 def growth_verdict(d: dict, *, mcap_min_m: float = 300.0, mcap_max_m: float = 100_000.0,
                    min_rev_g: float = 20.0) -> "tuple[str, str]":
     """ตัดสิน "หุ้นเติบโต ขนาดเล็ก-กลาง พื้นฐานผ่าน" จาก dict ของ fundamentals()

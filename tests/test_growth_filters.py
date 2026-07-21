@@ -26,7 +26,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from core import ranking, correlate  # noqa: E402
-from data.fundamentals import growth_verdict  # noqa: E402
+from data.fundamentals import growth_verdict, _norm_gate_metric  # noqa: E402
 
 _FAIL: list[str] = []
 
@@ -79,6 +79,22 @@ check("กำไรบาง ๆ 2% ก็นับว่ามีกำไร �
 # ปรับเกณฑ์ผ่าน env ได้
 check("เกณฑ์โต 30%: โต 25% → fail",
       growth_verdict({"mcap_m": 2000, "net_margin": -0.1, "rev_g": 25}, min_rev_g=30)[0], "fail")
+
+print("\n[2b] _norm_gate_metric — หน่วยของ Finnhub ≠ FMP (จุดที่เพี้ยน 100 เท่าได้)")
+m = _norm_gate_metric({"marketCapitalization": 5200.0,       # ล้าน$ → ใช้ตรง ๆ
+                       "revenueGrowthTTMYoy": 34.2,          # % → ใช้ตรง ๆ
+                       "netProfitMarginTTM": 12.3})          # % → ต้องหาร 100
+check("mcap ล้าน$ ผ่านตรง", m.get("mcap_m"), 5200.0)
+check("rev_g % ผ่านตรง", m.get("rev_g"), 34.2)
+check("margin % → สัดส่วน (12.3 → 0.123)", m.get("net_margin"), 0.123)
+v = growth_verdict(m)
+ok_("ต่อท่อเข้า growth_verdict แล้ว margin โชว์ 12% ไม่ใช่ 1230%",
+    v[0] == "pass" and "margin 12%" in v[1], f"{v}")
+check("margin ติดลบ (-4.5%) เครื่องหมายไม่เพี้ยน",
+      _norm_gate_metric({"netProfitMarginTTM": -4.5}).get("net_margin"), -0.045)
+check("field หาย → dict ว่าง (อย่า cache)", _norm_gate_metric({}), {})
+check("margin เป็นสตริงขยะ → ข้าม field นั้น",
+      _norm_gate_metric({"netProfitMarginTTM": "N/A"}), {})
 
 print("\n[3] correlate — วัดจากราคาจริง (กันป้ายเซกเตอร์หลอกแบบ HCSG)")
 rng = np.random.default_rng(7)

@@ -284,23 +284,30 @@ _TOP5_FILE = "top5_latest.json"
 
 
 def _fund_gate(symbols: list) -> dict:
-    """ด่านพื้นฐาน "หุ้นเติบโต ขนาดเล็ก-กลาง" — คืน {symbol: (verdict, เหตุผล)}
+    """ด่านพื้นฐาน "หุ้นเติบโต ขนาดเล็ก-กลาง" — คืน {symbol: (verdict, เหตุผล, mcap_m)}
 
-    ยิง API เฉพาะตัวที่ผ่านด่านเทคนิคแล้ว (ไม่ใช่ทั้ง universe) + cache 12 ชม. ใน GCS
-    Finnhub ไม่พร้อม/ล่ม → คืน unknown ทุกตัว (ปล่อยผ่าน — ข้อมูลขาดไม่ใช่ความผิด)
+    ใช้ growth_snapshot (1 call/ตัว + cache 12 ชม.) ไม่ใช่ fundamentals() ตัวเต็ม (7 calls)
+    — 40 ตัว × 7 = ~280 calls จะชน rate limit Finnhub free (60/นาที) ตั้งแต่รอบแรก
+    เว้นจังหวะระหว่างตัวที่ต้องยิงจริง (ตัวที่โดน cache แล้วไม่หน่วง)
+    Finnhub ไม่พร้อม/ล่ม → unknown (ปล่อยผ่าน — ข้อมูลขาดไม่ใช่ความผิด)
     """
+    import time
     from data import fundamentals as fnd
     out: dict = {}
     if not fnd.enabled():
-        return {sym: ("unknown", "Finnhub ไม่พร้อม") for sym in symbols}
+        return {sym: ("unknown", "Finnhub ไม่พร้อม", None) for sym in symbols}
     lo = float(os.getenv("MCAP_MIN_M", "300") or 300)
     hi = float(os.getenv("MCAP_MAX_M", "100000") or 100000)
     gmin = float(os.getenv("GROWTH_MIN_REV_G", "20") or 20)
+    delay = float(os.getenv("FUND_GATE_DELAY_S", "1.1") or 1.1)  # ~55 calls/นาที < เพดาน 60
     for sym in symbols:
         try:
-            d = fnd.fundamentals(sym)
-            out[sym] = fnd.growth_verdict(d, mcap_min_m=lo, mcap_max_m=hi, min_rev_g=gmin)
-            out[sym] = (*out[sym], d.get("mcap_m"))
+            t0 = time.monotonic()
+            d = fnd.growth_snapshot(sym)
+            v = fnd.growth_verdict(d, mcap_min_m=lo, mcap_max_m=hi, min_rev_g=gmin)
+            out[sym] = (*v, d.get("mcap_m"))
+            if time.monotonic() - t0 > 0.05:   # ยิงเน็ตจริง (ไม่ใช่ cache) → เว้นจังหวะ
+                time.sleep(delay)
         except Exception as e:  # noqa: BLE001
             log.debug("fund gate %s: %s", sym, e)
             out[sym] = ("unknown", "ดึงข้อมูลไม่ได้", None)
