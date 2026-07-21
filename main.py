@@ -1651,7 +1651,7 @@ def run_premarket_report(cfg: Config) -> int:
         if p.get("rs_rank") is not None:
             bits.append(f"RS {p['rs_rank']:.0f}")
         if p.get("stage_label"):
-            bits.append(f"Stage {p.get('stage')} {p['stage_label']}")
+            bits.append(str(p["stage_label"]))   # label มี "Stage N — ..." อยู่แล้ว ห้ามเติมซ้ำ
         if bits:
             L.append("   " + " · ".join(bits))
         if p.get("reasons"):

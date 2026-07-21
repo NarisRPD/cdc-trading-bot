@@ -1220,7 +1220,7 @@ def _handle_top5() -> str:
         if p.get("rs_rank") is not None:
             bits.append(f"RS {p['rs_rank']:.0f}")
         if p.get("stage_label"):
-            bits.append(f"Stage {p.get('stage')} {p['stage_label']}")
+            bits.append(str(p["stage_label"]))   # label มี "Stage N — ..." อยู่แล้ว ห้ามเติมซ้ำ
         if p.get("rsi") is not None:
             bits.append(f"RSI {p['rsi']:.0f}")
         L.append("   " + " · ".join(bits))
