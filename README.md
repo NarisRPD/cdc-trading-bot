@@ -226,12 +226,16 @@ gcloud scheduler jobs create http cdc-premarket \
   --location asia-southeast1 \
   --schedule "30 8 * * 1-5" \
   --time-zone "America/New_York" \
-  --uri "https://asia-southeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/cdc-scanner:run" \
+  --uri "https://run.googleapis.com/v2/projects/${PROJECT}/locations/asia-southeast1/jobs/cdc-scanner:run" \
   --http-method POST \
   --oauth-service-account-email "${SA}" \
   --message-body '{"overrides":{"containerOverrides":[{"env":[{"name":"PREMARKET_REPORT_ONLY","value":"true"}]}]}}' \
   --headers "Content-Type=application/json"
 ```
+
+> ต้องใช้ **v2 API** (`run.googleapis.com/v2/projects/...`) ไม่ใช่ v1 `namespaces` แบบ job สแกน
+> เพราะรอบนี้ต้องส่ง `overrides.containerOverrides.env` เข้าไปด้วย — รูปแบบเดียวกับที่
+> `bot.py::_trigger_scan_job` ใช้ override `SCAN_GROUPS` (พิสูจน์แล้วว่าใช้งานได้จริง)
 
 > ทำไมตั้ง time-zone เป็น `America/New_York` ไม่ใช่ `Asia/Bangkok`: ตลาด US เลื่อนตาม DST
 > ปีละ 2 ครั้ง (20:30 vs 21:30 น. ไทย) — ให้ Scheduler จัดการเอง จะได้ไม่ต้องไล่แก้ cron
