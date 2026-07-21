@@ -298,6 +298,8 @@ def full_status(pos: dict, *, crypto_exchange: str = "binance") -> dict:
     zone: Optional[str] = None
     stage: Optional[dict] = None
     exit_alert = False
+    ema_fast_v: Optional[float] = None   # EMA12/EMA26 ล่าสุด — sell-alert เอาไปเทียบ "ราคาสด" ระหว่างวัน
+    ema_slow_v: Optional[float] = None   # (ไม่ต้อง fetch 2 ปีซ้ำทุก 10 นาที)
 
     df = fetch_history(pos["market"], pos["symbol"], crypto_exchange=crypto_exchange)
     if df is not None and not df.empty:
@@ -307,6 +309,7 @@ def full_status(pos: dict, *, crypto_exchange: str = "binance") -> dict:
         if sig is not None:
             zone = sig.zone
             stage = sig.stage  # Weinstein Stage (ภาพใหญ่เทรนด์)
+            ema_fast_v, ema_slow_v = sig.ema_fast, sig.ema_slow
             # เตือนแบบ persistent (เตือนทุกวันที่ยังอยู่โซนสวนทาง ไม่ใช่แค่วันแรก
             # — กันพลาด report) : ถือ spot/call แต่เข้าโซนขาย (red) / ถือ put แต่เข้าโซนซื้อ (green)
             if pos["side"] in _LONGISH and zone == "red":
@@ -345,5 +348,7 @@ def full_status(pos: dict, *, crypto_exchange: str = "binance") -> dict:
         "exit_alert": exit_alert,
         "sl_hit": sl_hit,
         "tp_level": tp_level,
+        "ema_fast": ema_fast_v,   # EMA12 ล่าสุด
+        "ema_slow": ema_slow_v,   # EMA26 ล่าสุด — sell-alert เก็บไว้เทียบราคาสดระหว่างวัน
         "df": df,  # ส่ง OHLCV ที่ดึงแล้วกลับไป — /list เอาไปคำนวณ HV ได้โดยไม่ fetch ซ้ำ
     }

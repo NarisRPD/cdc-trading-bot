@@ -1093,6 +1093,17 @@ def run_watchlist_alerts(cfg: Config) -> int:
         except Exception as e:  # noqa: BLE001
             log.warning("status %s ล้มเหลว: %s", pos.get("symbol"), e)
             continue
+        # เก็บ EMA26 + ราคาปิด ไว้ให้ run_sell_alerts (รอบ 10 นาที) เทียบราคาสดได้
+        # โดยไม่ต้อง fetch history หนักซ้ำ — EMA ขยับช้า ใช้ค่าเมื่อวานเทียบสดแม่นพอ
+        if st.get("ema_slow") is not None or st.get("current_price") is not None:
+            if st.get("ema_slow") is not None:
+                pos["ema26"] = float(st["ema_slow"])
+            if st.get("current_price") is not None:
+                pos["prev_close"] = float(st["current_price"])
+            try:
+                store.add_position(pos)
+            except Exception as e:  # noqa: BLE001
+                log.warning("เก็บ ema26/prev_close %s ไม่สำเร็จ: %s", pos.get("symbol"), e)
         cur = st["current_zone"]
         label = side_th.get(pos["side"], pos["side"])
         if pos["side"] in ("call", "put") and pos.get("strike") is not None:
@@ -1363,6 +1374,108 @@ def run_news_alerts(cfg: Config) -> int:
 _BRIEFING_STATE = "briefing_state.json"
 
 
+_SELL_ALERT_STATE = "sell_alert_state.json"
+
+
+def _us_market_open() -> bool:
+    """ตลาดหุ้น US เปิดอยู่ไหม (อิงเวลา New York → ขยับตาม DST เอง)
+    ใช้กันยิง quote ตอนตลาดปิด (ลดโหลด yfinance ~4 เท่า) + กันเตือนนอกเวลาที่ทำอะไรไม่ได้"""
+    try:
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:  # noqa: BLE001
+        return True                      # อ่านเวลาไม่ได้ → ปล่อยผ่าน ดีกว่าเงียบหาย
+    if now.weekday() >= 5:               # เสาร์-อาทิตย์
+        return False
+    mins = now.hour * 60 + now.minute
+    return (9 * 60 + 30) <= mins <= (16 * 60)
+
+
+def run_sell_alerts(cfg: Config) -> int:
+    """เตือน 'ควรขาย' เกือบ realtime — รันทุกรอบ ~10 นาที (เบา: ใช้ราคาสดอย่างเดียว)
+
+    2 เงื่อนไขเท่านั้น:
+      1) 🔻 ร่วง ≥ SELL_DROP_PCT% จากราคาปิดเมื่อวาน
+      2) 📉 หลุด EMA26 (ค่าเก็บจากรอบเช็กโซนกลางดึก) = เสียโครงสร้างขาขึ้น
+    กันสแปม: 1 ครั้ง/วัน ต่อ (symbol|side|เหตุผล) · เซฟ state หลังส่งสำเร็จเท่านั้น
+    (ไม่เตือน TP/Stage3/ยืดเกิน/หลุด EMA12 — ผู้ใช้เลือกเอาเฉพาะ 2 เคสนี้)
+    """
+    if os.getenv("ENABLE_SELL_ALERTS", "true").strip().lower() not in ("1", "true", "yes", "on"):
+        return 0
+    if not _us_market_open():
+        return 0
+    try:
+        drop_pct = abs(float(os.getenv("SELL_DROP_PCT", "5") or 5))
+    except ValueError:
+        drop_pct = 5.0
+    try:
+        positions = [p for p in store.list_positions()
+                     if p.get("side") in ("spot", "call") and p.get("market") == "us"]
+    except Exception as e:  # noqa: BLE001
+        log.warning("sell-alert: โหลด watchlist ไม่สำเร็จ: %s", e)
+        return 0
+    if not positions:
+        return 0
+
+    from data.quote import last_price
+    state = store.load_json(_SELL_ALERT_STATE, {}) or {}
+    today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    lines: list[str] = []
+    fired: list[tuple] = []              # (state_key, pos, reason)
+
+    for pos in positions:
+        try:
+            cur = last_price(pos["market"], pos["symbol"])
+        except Exception as e:  # noqa: BLE001
+            log.warning("sell-alert: ราคา %s ไม่ได้: %s", pos.get("symbol"), e)
+            continue
+        if cur is None:
+            continue
+        sym, side, disp = pos["symbol"], pos["side"], pos.get("display", pos["symbol"])
+
+        # (1) ร่วงแรงจากราคาปิดเมื่อวาน
+        prev = pos.get("prev_close")
+        if prev:
+            chg = (cur - float(prev)) / float(prev) * 100.0
+            key = f"{sym}|{side}|drop"
+            if chg <= -drop_pct and state.get(key) != today:
+                lines.append(f"🔻 ลงแรง — {disp} {chg:+.1f}% วันนี้\n"
+                             f"   ราคา {cur:,.2f} (ปิดเมื่อวาน {float(prev):,.2f})")
+                fired.append((key, pos, "drop"))
+
+        # (2) หลุด EMA26 = เสียโครงสร้างขาขึ้น
+        e26 = pos.get("ema26")
+        if e26 and cur < float(e26):
+            key = f"{sym}|{side}|ema26"
+            if state.get(key) != today:
+                lines.append(f"📉 หลุด EMA26 — {disp} เสียโครงสร้างขาขึ้น\n"
+                             f"   ราคา {cur:,.2f} < EMA26 {float(e26):,.2f}\n"
+                             f"   ปิดไม้: /sell {disp} us")
+                fired.append((key, pos, "ema26"))
+
+    if not lines:
+        return 0
+    msg = "🚨 สัญญาณควรขาย\n\n" + "\n\n".join(lines)
+    if not send_telegram(msg, token=cfg.telegram_bot_token, chat_id=cfg.telegram_chat_id):
+        return 0                         # ส่งไม่สำเร็จ → ไม่ commit state (รอบหน้าเตือนใหม่)
+
+    for key, pos, reason in fired:
+        state[key] = today
+        if reason == "ema26":
+            # กันเตือนซ้ำจากรอบเช็กโซนกลางดึก (ระบบเดิมเตือน "หลุด EMA26 = โซน orange" อยู่แล้ว)
+            pos["last_zone"] = "orange"
+            try:
+                store.add_position(pos)
+            except Exception:  # noqa: BLE001
+                pass
+    state = {k: v for k, v in state.items() if v == today}   # prune คีย์วันเก่า
+    try:
+        store.save_json(_SELL_ALERT_STATE, state)
+    except Exception as e:  # noqa: BLE001
+        log.warning("sell-alert: เซฟ state ไม่สำเร็จ: %s", e)
+    log.info("sell-alert: เตือน %d เคส", len(fired))
+    return 1
+
+
 def _briefing_due() -> bool:
     """บรีฟวันละครั้ง ~08:00 ไทย — กันส่งซ้ำด้วย state ใน GCS (เทียบวันที่)"""
     try:
@@ -1606,6 +1719,8 @@ def main() -> int:
         # job นี้ถูกเด้งทุก ~10 นาที → ข่าวด่วนทุกรอบ (เบา) + เช็กโซนเฉพาะ ~04:30/16:40 (หนัก)
         log.info("=== Watchlist poller (ข่าวด่วนทุกรอบ + เช็กโซนตามเวลา) ===")
         rc = run_news_alerts(cfg)
+        rc_sell = run_sell_alerts(cfg)   # เตือนควรขาย (เบา · ทุกรอบ · เฉพาะช่วงตลาด US เปิด)
+        rc = rc or rc_sell
         if _zone_check_due():
             log.info("ถึงหน้าต่างเช็กโซน watchlist")
             rc_zone = run_watchlist_alerts(cfg)
