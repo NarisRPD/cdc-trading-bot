@@ -332,15 +332,33 @@ def _top_picks_snapshot(signals: List[Signal], bar, items: Optional[dict] = None
 
     n = int(os.getenv("TOP_PICKS_N", "10"))
     min_dv = float(os.getenv("MIN_DOLLAR_VOL_M", "5") or 5)
+    min_atr = float(os.getenv("MIN_ATR_PCT", "1.2") or 1.2)
+
+    # sector map ต้องโหลดก่อนให้คะแนน — ใช้ทั้งบูสต์เซกเตอร์โปรดและกระจายเซกเตอร์ตอนท้าย
+    smap: dict = {}
+    prefer_th: set = set()
+    try:
+        from universe.sector_map import sector_map, normalize
+        smap = sector_map()
+        # เซกเตอร์โปรดของผู้ใช้ (PREFER_SECTORS=technology,...) — บวกคะแนน "เบา ๆ"
+        # จงใจไม่บังคับเลือก: ตัวห่วยไม่ควรติดอันดับเพียงเพราะอยู่เซกเตอร์ที่ชอบ
+        prefer_th = {t for t in (normalize(x) for x in
+                                 os.getenv("PREFER_SECTORS", "").replace(";", ",").split(","))
+                     if t}
+    except Exception as e:  # noqa: BLE001 — ไม่มี sector ก็ยังจัดอันดับได้ตามปกติ
+        log.warning("sector map ไม่พร้อม (%s) — ข้ามการกระจาย/บูสต์เซกเตอร์", e)
+    prefer_bonus = float(os.getenv("PREFER_SECTOR_BONUS", "5") or 5)
 
     scored, spiked = [], 0
     for s in signals:
         if not ranking.passes_gate(s):
             continue
-        if ranking.spike_flags(s, min_dollar_vol_m=min_dv):
-            spiked += 1        # ขาขึ้นหลอก (ข่าวพุ่งวันเดียว) / สภาพคล่องต่ำ — ตัดตั้งแต่ต้น
+        if ranking.spike_flags(s, min_dollar_vol_m=min_dv, min_atr_pct=min_atr):
+            spiked += 1        # ขาขึ้นหลอก (ข่าว/ดีล) / แบนเกิน / สภาพคล่องต่ำ — ตัดตั้งแต่ต้น
             continue
         sc, parts = ranking.buy_score(s)
+        if prefer_th and smap.get(s.symbol) in prefer_th:
+            sc += prefer_bonus
         scored.append((sc, parts, s))
     scored.sort(key=lambda t: -t[0])
 
@@ -355,14 +373,7 @@ def _top_picks_snapshot(signals: List[Signal], bar, items: Optional[dict] = None
         kept.append(t)
     kept += scored[fund_cap:]          # ตัวที่ยังไม่ได้เช็ก — ตามหลังตัวที่เช็กแล้วเสมอ
 
-    # ── กระจาย: เซกเตอร์ (ป้าย) + correlation (ราคาจริง) ในลูปเดียว ──
-    smap: dict = {}
-    try:
-        from universe.sector_map import sector_map
-        smap = sector_map()
-    except Exception as e:  # noqa: BLE001 — ไม่มี sector ก็ยังจัดอันดับได้ตามปกติ
-        log.warning("sector map ไม่พร้อม (%s) — ข้ามการกระจายเซกเตอร์", e)
-
+    # ── กระจาย: เซกเตอร์ (ป้าย · โหลดไว้ข้างบนแล้ว) + correlation (ราคาจริง) ในลูปเดียว ──
     max_per = int(os.getenv("MAX_PER_SECTOR", "2") or 2)
     max_corr = float(os.getenv("MAX_CORR", "0.75") or 0.75)
     try:
@@ -412,7 +423,8 @@ def _top_picks_snapshot(signals: List[Signal], bar, items: Optional[dict] = None
             "bar_date": str(s.bar_date)[:10] if s.bar_date is not None else None,
             "score": sc,
             "parts": parts,
-            "reasons": ranking.top_reasons(parts),
+            "reasons": ((["⭐ เซกเตอร์โปรด"] if (prefer_th and smap.get(s.symbol) in prefer_th) else [])
+                        + ranking.top_reasons(parts)),
             "late": ranking.late_flags(s),
             "zone": s.zone,
             "price": s.close,
@@ -440,12 +452,14 @@ def _top_picks_snapshot(signals: List[Signal], bar, items: Optional[dict] = None
     # สัดส่วนแบ่งเงินระหว่างตัวที่ติดอันดับ — คำนวณที่นี่ครั้งเดียว เก็บลง snapshot
     # เพื่อให้ /top5 กับรายงานก่อนตลาดเปิดโชว์ตัวเลขเดียวกันเสมอ (คำนวณ 2 ที่จะเพี้ยนกันได้)
     alloc = {"weights": [], "total_risk_pct": None, "basis": "equal"}
+    budget = float(os.getenv("TOP_BUDGET_USD", "1000") or 1000)
     try:
         from core import alloc as alloc_mod
         alloc = alloc_mod.allocate(picks, tilt=float(os.getenv("ALLOC_SCORE_TILT", "0.5") or 0.5))
         for p, w, d in zip(picks, alloc["weights"], alloc["risk_pct"]):
             p["weight_pct"] = w
             p["stop_dist_pct"] = round(d, 1) if d is not None else None
+            p["alloc_usd"] = round(budget * w / 100.0)   # แปลงเป็นเงินจริงตามงบผู้ใช้
     except Exception as e:  # noqa: BLE001
         log.warning("allocate failed: %s", e)
 
@@ -453,6 +467,7 @@ def _top_picks_snapshot(signals: List[Signal], bar, items: Optional[dict] = None
         "bar_date": str(bar)[:10] if bar is not None else None,
         "alloc_basis": alloc.get("basis"),
         "total_risk_pct": alloc.get("total_risk_pct"),
+        "budget_usd": budget,
         # generated_at = เวลาที่ "เขียนไฟล์นี้" — จำเป็นเพราะ bar_date อย่างเดียวแยกไม่ออกว่า
         # ตลาดหยุด (bar_date เก่าเป็นเรื่องปกติ) หรือรอบสแกนล่มจนไฟล์ค้าง
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1756,7 +1771,10 @@ def run_premarket_report(cfg: Config) -> int:
     for i, p in enumerate(picks, 1):
         sym, sc = p.get("symbol", "?"), p.get("score") or 0
         band = "🟩" if sc >= 70 else ("🟨" if sc >= 55 else "⬜")
-        wt = f"  💰 {p['weight_pct']}%" if p.get("weight_pct") else ""
+        wt = ""
+        if p.get("weight_pct"):
+            usd = p.get("alloc_usd")
+            wt = f"  💰 {p['weight_pct']}%" + (f"≈${usd:,.0f}" if usd else "")
         L = [f"{i}. {sym}  {band} {sc:.0f}/100{wt}{_rank_move(sym, i, prev)}"]
         bits = []
         if p.get("price") is not None:
@@ -1797,7 +1815,9 @@ def run_premarket_report(cfg: Config) -> int:
     if held:
         parts.append("📌 คุณถืออยู่แล้ว: " + ", ".join(held) + "\n   (จังหวะขายให้ยึดการเตือนของ /list เป็นหลัก)")
     if any(p.get("weight_pct") for p in picks):
-        al = ["💰 สัดส่วนแบ่งเงิน — เป็น % ของ 'ก้อนที่คุณแบ่งมาลงชุดนี้' ไม่ใช่ทั้งพอร์ต"]
+        bud = snap.get("budget_usd")
+        al = ["💰 สัดส่วนแบ่งเงิน — เป็น % ของ 'ก้อนที่คุณแบ่งมาลงชุดนี้' ไม่ใช่ทั้งพอร์ต"
+              + (f" (งบ ${bud:,.0f})" if bud else "")]
         if snap.get("alloc_basis") == "risk":
             al.append("   ถ่วงด้วยระยะถึง SL → ตัวเหวี่ยงได้เงินน้อยลง เจ็บพอ ๆ กันทุกตัวถ้าโดน SL")
         if snap.get("total_risk_pct") is not None:

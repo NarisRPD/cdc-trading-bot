@@ -69,8 +69,17 @@ ok_("พุ่ง +14% แล้วแบนสนิท (ATR 0.8%/วัน) �
     bool(ranking.spike_flags(S(max_day_up60_pct=14.0, atr=0.8, close=100.0))))
 check("พุ่ง +14% แต่ยังแกว่งปกติ (ATR 3%/วัน) → ไม่ธง",
       ranking.spike_flags(S(max_day_up60_pct=14.0, atr=3.0, close=100.0)), [])
-check("แบนแต่ไม่เคยพุ่ง (หุ้น defensive เฉย ๆ) → ไม่ธง",
-      ranking.spike_flags(S(max_day_up60_pct=4.0, atr=0.8, close=100.0)), [])
+
+# บทเรียนจากที่ RAMP หลุดรอบสอง (SL -1.6% = ATR 0.8%): ถ้าดีลประกาศเกิน 60 แท่ง
+# หน้าต่าง spike มองไม่เห็นแล้ว → "แบนสนิทอย่างเดียว" ก็ต้องตัด เพราะโจทย์คือ
+# "ถือรันเทรนด์" — หุ้นที่แกว่ง <1.2%/วัน ไม่มีเทรนด์ให้รัน และห้ามเข้าสูตรแบ่งเงิน
+# (ถ่วงด้วย 1/ความเสี่ยง จะเทเงินให้ตัวที่ตายแล้วมากสุดพอดี — ในภาพจริงได้ 35%)
+ok_("แบนสนิทแม้ไม่เห็น spike (ATR 0.8% · ดีลเก่ากว่า 60 แท่ง) → ธง",
+    bool(ranking.spike_flags(S(max_day_up60_pct=4.0, atr=0.8, close=100.0))))
+check("แกว่งปกติ 1.9%/วัน ไม่เคยพุ่ง → ไม่ธง",
+      ranking.spike_flags(S(max_day_up60_pct=4.0, atr=1.9, close=100.0)), [])
+check("ปรับเกณฑ์ได้: floor 0.5% → ATR 0.8% ผ่าน",
+      ranking.spike_flags(S(max_day_up60_pct=4.0, atr=0.8, close=100.0), min_atr_pct=0.5), [])
 ok_("กำไรเดือน +12% มาจากวันเดียว +10% → ธง",
     bool(ranking.spike_flags(S(max_day_up_pct=10.0, max_day_up60_pct=10.0, ret20_pct=12.0))))
 check("เทรนด์แท้ (ขึ้นเดือน +15% วันแรงสุด +4%) → ไม่ธง",
@@ -112,6 +121,15 @@ check("margin ติดลบ (-4.5%) เครื่องหมายไม่
 check("field หาย → dict ว่าง (อย่า cache)", _norm_gate_metric({}), {})
 check("margin เป็นสตริงขยะ → ข้าม field นั้น",
       _norm_gate_metric({"netProfitMarginTTM": "N/A"}), {})
+
+print("\n[2c] sector_map.normalize — รับได้ทั้งอังกฤษ/ไทย (env PREFER_SECTORS)")
+from universe.sector_map import normalize  # noqa: E402
+check("'technology' → เทคโนโลยี", normalize("technology"), "เทคโนโลยี")
+check("'tech' (พิมพ์สั้น) → เทคโนโลยี", normalize("tech"), "เทคโนโลยี")
+check("'เทคโนโลยี' ตรงตัว", normalize("เทคโนโลยี"), "เทคโนโลยี")
+check("'health' → สุขภาพ", normalize("health"), "สุขภาพ")
+check("ค่าว่าง → None", normalize(""), None)
+check("มั่ว ๆ → None", normalize("xyz123"), None)
 
 print("\n[3] correlate — วัดจากราคาจริง (กันป้ายเซกเตอร์หลอกแบบ HCSG)")
 rng = np.random.default_rng(7)

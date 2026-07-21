@@ -1244,7 +1244,13 @@ def _handle_top5() -> str:
             if p.get("weight_pct") and p.get("stop_dist_pct"):
                 # เจ็บจริงเป็น % ของ "ก้อนทั้งหมด" ถ้าตัวนี้โดน SL — เท่ากันทุกตัวคือเป้าหมายของการถ่วง
                 hit = p["weight_pct"] / 100.0 * p["stop_dist_pct"]
-                L.append(f"   💰 ใส่ {p['weight_pct']}% ของก้อน · โดน SL = เสีย {hit:.1f}% ของก้อน")
+                usd = p.get("alloc_usd")
+                money = f" ≈ ${usd:,.0f}" if usd else ""
+                L.append(f"   💰 ใส่ {p['weight_pct']}%{money} · โดน SL = เสีย {hit:.1f}% ของก้อน")
+                # งบส่วนนี้ซื้อไม่ถึง 1 หุ้น — บอกตรง ๆ ดีกว่าปล่อยให้ผู้ใช้งงหน้าโบรก
+                if usd and price and price > usd:
+                    L.append(f"   ⚠️ หุ้นละ ${_fmt_price(price)} แพงกว่างบส่วนนี้ "
+                             f"— ใช้หุ้นเศษส่วน (fractional) หรือเกลี่ยงบเอง")
 
         if p.get("late"):
             L.append("   ⚠️ " + " · ".join(p["late"]))
@@ -1263,7 +1269,12 @@ def _handle_top5() -> str:
 
 def _alloc_note(snap: dict) -> str:
     """คำอธิบายสัดส่วน 💰 — ต้องบอกให้ชัดว่าเป็น % ของอะไร และตัวเลขนี้มาจากไหน"""
-    L = ["💰 = สัดส่วนของ 'เงินก้อนที่คุณแบ่งมาลง 5 ตัวนี้' ไม่ใช่ % ของพอร์ตทั้งหมด"]
+    n_picks = len(snap.get("picks") or [])
+    bud = snap.get("budget_usd")
+    head = f"💰 = สัดส่วนของ 'เงินก้อนที่คุณแบ่งมาลง {n_picks} ตัวนี้' ไม่ใช่ % ของพอร์ตทั้งหมด"
+    if bud:
+        head += f"\n   คิดจากงบ ${bud:,.0f} (ปรับได้: TOP_BUDGET_USD)"
+    L = [head]
     if snap.get("alloc_basis") == "risk":
         L.append("   ถ่วงด้วยระยะถึง SL (ตัวเหวี่ยงได้น้อยลง) → โดน SL แล้วเจ็บพอ ๆ กันทุกตัว")
     else:

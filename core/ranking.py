@@ -121,7 +121,7 @@ def top_reasons(parts: dict, k: int = 3) -> "list[str]":
     return [name for _, name in pos[:k]]
 
 
-def spike_flags(s, *, min_dollar_vol_m: float = 5.0) -> "list[str]":
+def spike_flags(s, *, min_dollar_vol_m: float = 5.0, min_atr_pct: float = 1.2) -> "list[str]":
     """ธง "ขาขึ้นหลอก/เข้าไม่ได้" — ตัดออกจาก Top picks ตั้งแต่ต้นทาง
 
     เคสที่ผู้ใช้เจอจริง: หุ้นประกาศได้สัญญาใหญ่ (RAMP ฯลฯ) → พุ่งวันเดียว
@@ -140,13 +140,20 @@ def spike_flags(s, *, min_dollar_vol_m: float = 5.0) -> "list[str]":
     elif up is not None and up >= 9.0 and r20 is not None and r20 > 0 and up >= 0.7 * r20:
         # กำไรทั้งเดือน ≥70% มาจากวันเดียว — ที่เหลือแทบไม่ขยับ = spike ล้วน
         out.append(f"กำไร 20 วัน (+{r20:.0f}%) มาจากวันเดียว +{up:.0f}% เกือบทั้งหมด")
-    # ลายเซ็นหุ้นติดดีลซื้อกิจการ: เคยพุ่งแรง แล้ว "แบนสนิท" (ราคาไปเกาะราคาดีล ความผันผวนหาย)
-    # หุ้นปกติหลังพุ่งยังแกว่ง 2-5% ต่อวัน · หุ้นติดดีลเหลือ <1.5% — คู่เงื่อนไขนี้แม่นมาก
+    # ความผันผวนต่ำผิดปกติ — หุ้นที่จะ "ถือรันเทรนด์" ต้องมีเทรนด์ให้รัน
+    # หุ้นติดดีลซื้อกิจการราคาไปเกาะราคาดีล เหลือแกว่ง <1%/วัน (เคสจริง: RAMP ATR 0.8%)
+    # ต้องมีกฎ "แบนอย่างเดียวก็ตัด" ด้วย เพราะถ้าดีลประกาศเกิน 60 แท่ง หน้าต่าง spike มองไม่เห็นแล้ว
+    # และห้ามปล่อยเข้าสูตรแบ่งเงินเด็ดขาด: ถ่วงด้วย 1/ความเสี่ยง จะเทเงินให้ตัวที่ตายแล้วมากสุดพอดี
     atr_v, close_v = getattr(s, "atr", None), getattr(s, "close", None)
-    if (up60 is not None and up60 >= 12.0 and atr_v and close_v
-            and close_v > 0 and (atr_v / close_v) * 100.0 < 1.5):
-        out.append(f"พุ่ง +{up60:.0f}% แล้วแบนสนิท (ATR {atr_v / close_v * 100:.1f}%/วัน) "
-                   "— รูปแบบโดนซื้อกิจการ ราคาถูกตรึงแล้ว")
+    atr_pct = (atr_v / close_v * 100.0) if (atr_v and close_v and close_v > 0) else None
+    if atr_pct is not None:
+        if up60 is not None and up60 >= 12.0 and atr_pct < 1.5:
+            # เคยพุ่งแรง + แบนสนิท = ลายเซ็นโดนซื้อกิจการชัดที่สุด (หุ้นปกติหลังพุ่งยังแกว่ง 2-5%)
+            out.append(f"พุ่ง +{up60:.0f}% แล้วแบนสนิท (ATR {atr_pct:.1f}%/วัน) "
+                       "— รูปแบบโดนซื้อกิจการ ราคาถูกตรึงแล้ว")
+        elif atr_pct < min_atr_pct:
+            out.append(f"นิ่งผิดปกติ (แกว่ง ~{atr_pct:.1f}%/วัน) — ไม่มีเทรนด์ให้รัน "
+                       "(ลักษณะหุ้นติดดีลซื้อกิจการ/ราคาถูกตรึง)")
     dv = getattr(s, "dollar_vol_m", None)
     if dv is not None and dv < min_dollar_vol_m:
         # ซื้อขายเบาบาง — เข้าออกจริงลำบาก + โดนลากราคาง่าย

@@ -65,6 +65,24 @@ def sector_of(ticker: str) -> Optional[str]:
     return sector_map().get((ticker or "").strip().upper())
 
 
+def normalize(name: str) -> Optional[str]:
+    """ชื่อเซกเตอร์ (ไทยหรืออังกฤษ GICS) → ชื่อไทยมาตรฐานที่ sector_map ใช้
+    ไว้รับค่า env เช่น PREFER_SECTORS=technology (พิมพ์อังกฤษใน CLI ง่ายกว่า)"""
+    x = (name or "").strip()
+    if not x:
+        return None
+    low = x.lower()
+    if low in _TH:                      # ชื่ออังกฤษ GICS
+        return _TH[low]
+    if x in _TH.values():               # ชื่อไทยตรงตัว
+        return x
+    # เผื่อพิมพ์สั้น เช่น "tech"
+    for en, th in _TH.items():
+        if low and low in en:
+            return th
+    return None
+
+
 def diversify(ranked: list, n: int, max_per_sector: int, sec_of) -> "tuple[list, dict]":
     """เลือก n ตัวจาก ranked (เรียงคะแนนแล้ว) โดยจำกัดจำนวนต่อเซกเตอร์
 
