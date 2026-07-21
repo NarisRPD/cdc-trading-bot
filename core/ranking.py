@@ -8,7 +8,6 @@ core/ranking.py — คะแนน "น่าซื้อ" (buy_score 0-100) �
 pure logic: ไม่มี I/O · ไม่ import main/store/network · ใช้เฉพาะ field ที่ Signal มีจริง
 """
 from __future__ import annotations
-from typing import Optional
 
 # โซนที่ยอมให้เข้ารอบฝั่งซื้อ (green=ขาขึ้น · yellow=ย่อตื้น=จังหวะเข้า · blue=ปลายขาลงเด้งแรง=ดักกลับตัว)
 _BUY_ZONES = ("green", "yellow", "blue")

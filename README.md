@@ -107,6 +107,9 @@ red    = (not bull) and close <= fast  # Sell zone
 | `ENABLE_EMA200_FILTER` | `true` | คำนวณ EMA200 (ต้องการ ≥200 แท่ง) |
 | `MIN_BARS_REQUIRED` | `60` | ขั้นต่ำเผื่อ ENABLE_EMA200_FILTER=false |
 | `TOP_PICKS_N` | `5` | จำนวนหุ้นใน `/top5` (คัดตอนสแกน US แล้วเก็บ snapshot) |
+| `PREMARKET_REPORT_ONLY` | `false` | โหมด job: ส่งรายงาน Top picks ก่อนตลาด US เปิด แล้วจบ |
+| `ENABLE_SELL_ALERTS` | `true` | เตือนควรขาย (ลงแรง / หลุด EMA26) เฉพาะเวลาตลาด US เปิด |
+| `SELL_DROP_PCT` | `5` | ร่วงกี่ % จากราคาปิดเมื่อวาน ถึงจะเตือน |
 | `DRY_RUN` | `false` | ไม่ส่ง Telegram แค่ log |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` |
 
@@ -213,6 +216,35 @@ gcloud scheduler jobs create http cdc-scanner-trigger \
 
 > `30 8 * * *` Asia/Bangkok = 08:30 น. ไทย — ทุกตลาดปิดแท่งของวันก่อนหน้าครบ
 > (อย่าใช้ `30 1` + Asia/Bangkok = ตี 1:30 ตลาด US ยังไม่ปิด จะพลาดแท่งล่าสุด)
+
+#### รายงาน Top picks ก่อนตลาด US เปิด (`/top5` แบบส่งเอง)
+
+job แยกที่ยิง **08:30 ตามเวลานิวยอร์ก** = 1 ชม. ก่อนตลาดเปิดเสมอ:
+
+```bash
+gcloud scheduler jobs create http cdc-premarket \
+  --location asia-southeast1 \
+  --schedule "30 8 * * 1-5" \
+  --time-zone "America/New_York" \
+  --uri "https://asia-southeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT}/jobs/cdc-scanner:run" \
+  --http-method POST \
+  --oauth-service-account-email "${SA}" \
+  --message-body '{"overrides":{"containerOverrides":[{"env":[{"name":"PREMARKET_REPORT_ONLY","value":"true"}]}]}}' \
+  --headers "Content-Type=application/json"
+```
+
+> ทำไมตั้ง time-zone เป็น `America/New_York` ไม่ใช่ `Asia/Bangkok`: ตลาด US เลื่อนตาม DST
+> ปีละ 2 ครั้ง (20:30 vs 21:30 น. ไทย) — ให้ Scheduler จัดการเอง จะได้ไม่ต้องไล่แก้ cron
+>
+> **กันส่งซ้ำอยู่ที่โค้ด ไม่ใช่ที่นาฬิกา**: `run_premarket_report` ส่งเฉพาะเมื่อ snapshot มี
+> `bar_date` *ใหม่กว่า* ครั้งก่อน (เก็บใน `premarket_state.json`) → เสาร์อาทิตย์ · วันหยุดตลาด ·
+> รอบสแกนล่มจนไฟล์ค้าง · job ถูกยิงซ้ำ ล้วนไม่ส่งซ้ำ และ mark ก่อนส่งเสมอ
+> (ยอมพลาด 1 วัน ดีกว่าสแปมซ้ำหลายใบเมื่อ Cloud Run retry ทั้ง container)
+
+> ⚠️ **cadence ของ `cdc-watchlist` มีผลกับการเตือนขาย**: `run_sell_alerts` ออกแบบให้รันถี่
+> (ทุก ~10 นาที) และมีด่าน `_us_market_open()` = เฉพาะ 09:30-16:00 ET เท่านั้น
+> ถ้า Scheduler ยังเป็น 16:45 + 04:30 ไทยตามข้อ 7 ด้านล่าง (= 04:45/16:30 ET) **จะไม่มีวันเตือนเลย**
+> ต้องเพิ่มรอบให้ครอบเวลาตลาด US: `*/10 9-16 * * 1-5` time-zone `America/New_York`
 
 ### 6.6 รักษาให้ฟรี 100% — checklist
 - ✅ image < 0.5GB (multi-stage + slim)

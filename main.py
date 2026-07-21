@@ -10,7 +10,9 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -276,11 +278,12 @@ def run_crypto(cfg: Config) -> GroupResult:
 _TOP5_FILE = "top5_latest.json"
 
 
-def _top_picks_snapshot(signals: List[Signal], bar) -> None:
+def _top_picks_snapshot(signals: List[Signal], bar) -> list:
     """คัด 'หุ้น US น่าถือรันเทรนด์' จากสัญญาณที่สแกนเสร็จแล้ว → เซฟไว้ให้ /top5 อ่าน
 
     ทำตอนสแกนรอบปกติ (ไม่ยิง Telegram) เพราะข้อมูลครบอยู่แล้ว = ไม่ต้องดึงซ้ำ 1,100 ตัว
     ถ้าพังต้อง *ไม่* ทำให้สแกนหลักล่ม → ห่อ try ทั้งก้อนที่ผู้เรียก
+    คืน list ของ picks เพื่อให้ผู้เรียกส่งต่อให้ watchlist.picks (F3) ได้โดยไม่ต้องอ่านไฟล์ซ้ำ
     """
     from core import ranking
     from watchlist import store
@@ -298,6 +301,10 @@ def _top_picks_snapshot(signals: List[Signal], bar) -> None:
     for sc, parts, s in scored[:n]:
         picks.append({
             "symbol": s.symbol,
+            # bar_date "รายตัว" ไม่ใช่ของ snapshot: ตัวกรอง stale ปล่อยผ่านได้ถึง 8 วัน
+            # (max_stale_days_equity) หุ้นที่ feed ค้างจึงอาจติดอันดับด้วยแท่งเก่า
+            # F3 ต้องผูก entry กับแท่งของมันเองไม่งั้นหน้าต่าง 5/10/20 แท่งเลื่อนแบบเงียบ ๆ
+            "bar_date": str(s.bar_date)[:10] if s.bar_date is not None else None,
             "score": sc,
             "parts": parts,
             "reasons": ranking.top_reasons(parts),
@@ -316,13 +323,17 @@ def _top_picks_snapshot(signals: List[Signal], bar) -> None:
         })
 
     store.save_json(_TOP5_FILE, {
-        "bar_date": str(bar) if bar else None,
+        "bar_date": str(bar)[:10] if bar is not None else None,
+        # generated_at = เวลาที่ "เขียนไฟล์นี้" — จำเป็นเพราะ bar_date อย่างเดียวแยกไม่ออกว่า
+        # ตลาดหยุด (bar_date เก่าเป็นเรื่องปกติ) หรือรอบสแกนล่มจนไฟล์ค้าง
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "pool": len(scored),          # ผ่านด่านคัดกี่ตัว (ไว้ดูว่าตลาดกว้างแค่ไหน)
         "scanned": len(signals),
         "picks": picks,
     })
     log.info("Top picks: pool=%d → เก็บ %d ตัว (%s)", len(scored), len(picks),
              ", ".join(p["symbol"] for p in picks) or "-")
+    return picks
 
 
 def run_us_stocks(cfg: Config) -> GroupResult:
@@ -340,8 +351,13 @@ def run_us_stocks(cfg: Config) -> GroupResult:
     if cfg.enable_reversal_watch:
         reversal = _enrich_reversal(reversal, items, cfg)
     bar = max((s.bar_date for s in signals), default=None)
-    try:  # เก็บ Top picks ไว้ให้ /top5 — ห้ามทำให้สแกนหลักล่ม
-        _top_picks_snapshot(signals, bar)
+    try:  # เก็บ Top picks ไว้ให้ /top5 + ตามผลคำแนะนำเก่า — ห้ามทำให้สแกนหลักล่ม
+        picks = _top_picks_snapshot(signals, bar)
+        from watchlist import picks as picks_log
+        picks_log.log_picks(picks, bar)
+        # ส่ง items (DataFrame ที่ batch มาแล้วทั้ง universe) เข้าไปประเมินผลย้อนหลัง
+        # → ไม่ยิง yfinance เพิ่ม ยกเว้นหุ้นที่หลุด universe ไปแล้ว
+        picks_log.evaluate(cfg, items=items)
     except Exception as e:  # noqa: BLE001
         log.warning("top picks snapshot failed: %s", e)
     fetch_failed = len(tickers) - len(items)
@@ -1459,6 +1475,7 @@ def run_sell_alerts(cfg: Config) -> int:
         return 0
     if not _us_market_open():
         return 0
+    from watchlist import store
     try:
         drop_pct = abs(float(os.getenv("SELL_DROP_PCT", "5") or 5))
     except ValueError:
@@ -1530,6 +1547,113 @@ def run_sell_alerts(cfg: Config) -> int:
         log.warning("sell-alert: เซฟ state ไม่สำเร็จ: %s", e)
     log.info("sell-alert: เตือน %d เคส", len(fired))
     return 1
+
+
+# ─── F2: รายงานก่อนตลาด US เปิด ─────────────────────────────────────────
+_PREMARKET_STATE = "premarket_state.json"
+
+
+def _rank_move(sym: str, rank: int, prev: dict) -> str:
+    """ป้ายบอกว่าอันดับขยับยังไงจากรอบก่อน"""
+    if not prev:
+        return ""
+    old = prev.get(sym)
+    if old is None:
+        return "  🆕 เข้าใหม่"
+    if old == rank:
+        return "  ⏸ อันดับเดิม"
+    return f"  {'▲' if rank < old else '▼'}{abs(old - rank)} (เดิมอันดับ {old})"
+
+
+def run_premarket_report(cfg: Config) -> int:
+    """🌅 รายงาน Top picks ก่อนตลาด US เปิด — ยิงด้วย Scheduler job แยก (tz America/New_York)
+
+    ทำไมไม่เกาะ job ทุก 10 นาที + เช็กนาฬิกาเอง: หน้าต่างเวลาแคบ ๆ พลาดได้ทั้งวันแบบเงียบ ๆ
+    ถ้ารอบนั้นบังเอิญช้า และ DST ทำให้ต้องไล่แก้ cron ปีละ 2 ครั้ง
+    → ให้ Cloud Scheduler เป็นเจ้าของ "เวลา" (cron 30 8 * * 1-5 tz America/New_York = 08:30 ET เสมอ)
+      ส่วนโค้ดเป็นเจ้าของ "ห้ามส่งซ้ำ" ด้วย bar_date
+
+    กันส่งซ้ำ: ส่งเมื่อ snapshot มี bar_date "ใหม่กว่า" ครั้งก่อนเท่านั้น (ไม่ใช่ != )
+    เพราะ /scan usstocks กลางวันอาจเขียนทับด้วย bar_date เก่ากว่าได้ (_trim_unclosed_bar อิง UTC)
+    กติกาเดียวนี้คุมได้หมด: เสาร์อาทิตย์ · วันหยุดตลาด · รอบสแกนล่มจนไฟล์ค้าง · ยิงซ้ำ
+    """
+    from watchlist import store
+    from watchlist import picks as picks_log
+
+    snap = store.load_json(_TOP5_FILE, {}) or {}
+    picks = snap.get("picks") or []
+    bd = str(snap.get("bar_date") or "")[:10]
+    if not picks or not bd:
+        log.info("premarket: ยังไม่มี snapshot — ข้าม")
+        return 0
+
+    state = store.load_json(_PREMARKET_STATE, {}) or {}
+    last = str(state.get("last_bar_date") or "")
+    if last and bd <= last:      # ISO date เทียบเป็นสตริงได้ตรงตามลำดับเวลา
+        log.info("premarket: ยังไม่มีแท่งใหม่ (snapshot=%s, ส่งไปแล้ว=%s) — ข้าม", bd, last)
+        return 0
+
+    # เขียน state ให้สำเร็จ "ก่อน" ส่ง — รายงานวันละครั้ง ยอมพลาด 1 วันดีกว่าสแปมซ้ำหลายใบ
+    # (Cloud Run retry ทั้ง container ได้ ถ้า mark ทีหลังจะได้รายงานซ้ำ)
+    try:
+        store.save_json(_PREMARKET_STATE, {"last_bar_date": bd,
+                                           "marked_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    except Exception as e:  # noqa: BLE001
+        log.warning("premarket: เขียน state ไม่สำเร็จ (%s) — งดส่งรอบนี้ กันส่งซ้ำ", e)
+        return 1
+
+    prev_bars = [b for b in picks_log.recent_bars(4) if b < bd]
+    prev = picks_log.ranks_at(prev_bars[0]) if prev_bars else {}
+
+    gen = str(snap.get("generated_at") or "")[:16].replace("T", " ")
+    head = [f"🌅 ก่อนตลาด US เปิด — Top {len(picks)} น่าถือรันเทรนด์",
+            f"อิงแท่งปิด {bd}" + (f" · สแกน {gen} UTC" if gen else "")]
+    if prev_bars:
+        head.append(f"เทียบกับรอบก่อน ({prev_bars[0]})")
+
+    blocks, late_lines, held = [], [], []
+    for i, p in enumerate(picks, 1):
+        sym, sc = p.get("symbol", "?"), p.get("score") or 0
+        band = "🟩" if sc >= 70 else ("🟨" if sc >= 55 else "⬜")
+        L = [f"{i}. {sym}  {band} {sc:.0f}/100{_rank_move(sym, i, prev)}"]
+        bits = []
+        if p.get("price") is not None:
+            bits.append(f"ปิด ${p['price']:,.2f}")
+        if p.get("rs_rank") is not None:
+            bits.append(f"RS {p['rs_rank']:.0f}")
+        if p.get("stage_label"):
+            bits.append(f"Stage {p.get('stage')} {p['stage_label']}")
+        if bits:
+            L.append("   " + " · ".join(bits))
+        if p.get("reasons"):
+            L.append("   💡 " + " · ".join(p["reasons"]))
+        atr = p.get("atr")
+        if p.get("price") and atr:
+            L.append(f"   🎯 เข้า ≤ ${p['price'] + 0.3 * atr:,.2f} · SL ${p['price'] - 2 * atr:,.2f}")
+        blocks.append("\n".join(L))
+        if p.get("late"):
+            late_lines.append(f"• {sym} — " + " · ".join(p["late"]))
+        try:    # ถืออยู่แล้ว → ให้ sell-alert เป็นเจ้าของเรื่องขาย จะได้ไม่มีคำสั่งขัดกัน
+            if store.get_by_ticker(sym):
+                held.append(sym)
+        except Exception:  # noqa: BLE001
+            pass
+
+    parts = ["\n".join(head), "\n\n".join(blocks)]
+    dropped = [s for s in prev if s not in {p.get("symbol") for p in picks}]
+    if dropped:
+        parts.append("📤 หลุดอันดับจากรอบก่อน: " + ", ".join(dropped))
+    if late_lines:
+        parts.append("⚠️ ติดธงปลายเทรนด์ — ไล่ราคาเสี่ยง\n" + "\n".join(late_lines))
+    if held:
+        parts.append("📌 คุณถืออยู่แล้ว: " + ", ".join(held) + "\n   (จังหวะขายให้ยึดการเตือนของ /list เป็นหลัก)")
+    parts.append("─────────\n"
+                 "ราคาข้างบนคือ 'ราคาปิด' ของแท่งล่าสุด ไม่ใช่ราคาสด\n"
+                 "ดูอันดับล่าสุด /top5 · ผลย้อนหลังของคำแนะนำ /picks")
+
+    ok = send_telegram("\n\n".join(parts))
+    log.info("premarket: ส่ง %s (แท่ง %s, %d ตัว)", ok, bd, len(picks))
+    return 0 if ok else 1
 
 
 def _briefing_due() -> bool:
@@ -1770,6 +1894,15 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 log.exception("DIAG %s failed: %s", tk, e)
         return 0
+
+    # job รายงานก่อนตลาด US เปิด — Scheduler แยก (cron "30 8 * * 1-5" tz America/New_York)
+    if os.getenv("PREMARKET_REPORT_ONLY", "").strip().lower() in ("1", "true", "yes", "on"):
+        log.info("=== รายงานก่อนตลาด US เปิด ===")
+        try:
+            return run_premarket_report(cfg)
+        except Exception as e:  # noqa: BLE001 — งานเสริม ห้ามทำให้ job ตายจน Cloud Run retry ซ้ำ
+            log.exception("premarket report ล่ม: %s", e)
+            return 0
 
     if os.getenv("WATCHLIST_ALERT_ONLY", "").strip().lower() in ("1", "true", "yes", "on"):
         # job นี้ถูกเด้งทุก ~10 นาที → ข่าวด่วนทุกรอบ (เบา) + เช็กโซนเฉพาะ ~04:30/16:40 (หนัก)

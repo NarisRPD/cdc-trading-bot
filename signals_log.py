@@ -133,6 +133,7 @@ def evaluate_outcomes(cfg, *, max_eval: int = 80) -> int:
         from data.quote import fetch_history
         import pandas as pd
         from collections import defaultdict
+        from core import forward
     except Exception as e:  # noqa: BLE001
         log.warning("evaluate_outcomes import ไม่ได้: %s", e)
         return 0
@@ -169,28 +170,17 @@ def evaluate_outcomes(cfg, *, max_eval: int = 80) -> int:
             df = fetch_history(mk, sym, crypto_exchange=cfg.crypto_exchange)
             if df is None or df.empty:
                 continue
-            idx = pd.DatetimeIndex([
-                (pd.Timestamp(x).tz_localize(None) if pd.Timestamp(x).tzinfo else pd.Timestamp(x)).normalize()
-                for x in df.index
-            ])
+            # กติกาหาแท่ง forward อยู่ที่ core/forward.py — ใช้ร่วมกับ watchlist/picks.py
+            # (เคยเป็นโค้ดตรงนี้ · ย้ายออกไปเพื่อไม่ให้บั๊ก a9b2287 เกิดซ้ำในไฟล์ที่ก๊อปไป)
+            idx = forward.normalized_index(df)
             highs = df["high"].astype(float).values
             lows = df["low"].astype(float).values
             for r in group:
                 try:
                     bd = pd.Timestamp(r["bar_date"]).normalize()
-                    pos = int(idx.searchsorted(bd))
-                    if pos >= len(idx):
-                        continue  # bar_date หลังแท่งสุดท้าย → ยังไม่มีแท่ง forward, ค้างไว้
-                    # exact match: แท่งสัญญาณอยู่ที่ pos → forward เริ่ม pos+1
-                    # ไม่ตรง (วันสัญญาณเป็นวันหยุด/feed revise ทิ้ง): idx[pos] = แท่งแรกหลัง bd = forward แท่งแรก
-                    #   → เริ่มที่ pos (อย่าใช้ pos+1 จะข้ามแท่ง forward แรกไป = ทำผลเพี้ยน/win-rate ต่ำเกิน)
-                    # pos==0 + ไม่ตรง = bd อยู่ก่อนทั้ง window → แท่งเข้าหายจริง ประเมินไม่ได้ ข้าม
-                    if idx[pos] == bd:
-                        start = pos + 1
-                    elif pos == 0:
-                        continue
-                    else:
-                        start = pos
+                    start, status = forward.forward_start(idx, bd)
+                    if status != forward.OK:
+                        continue  # pending = แท่ง forward ยังไม่เกิด · impossible = แท่งเข้าหลุด window
                     fh = highs[start: start + lookahead]
                     fl = lows[start: start + lookahead]
                     if len(fh) == 0:
@@ -214,7 +204,8 @@ def evaluate_outcomes(cfg, *, max_eval: int = 80) -> int:
                     # ยังไม่ชน target/stop และเก็บแท่ง forward ไม่ครบ window → ปล่อยค้าง (outcome=None)
                     # ให้ประเมินใหม่รอบหน้าเมื่อมีแท่งครบ — กัน "expired" ด่วนช่วงวันหยุดเยอะ/แท่งล่าสุดยังไม่ออก
                     # (ทำ win-rate ต่ำกว่าจริง) · ยกเว้นแก่เกิน hard_expire = feed สั้นจริง → ยอมปิด expired
-                    if outcome == "expired" and len(fh) < lookahead and (today - bd).days < hard_expire:
+                    if outcome == "expired" and forward.still_pending(
+                            len(fh), lookahead, (today - bd).days, hard_expire):
                         continue
                     # MFE/MAE วัดเฉพาะช่วง "ถือจริง" (ถึงแท่งที่ปิดผล) ไม่รวมแท่งหลังไม้ปิดไปแล้ว
                     # (expired → bars==len(fh) จึงเท่าเดิม)

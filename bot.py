@@ -963,14 +963,13 @@ def _handle_stats() -> str:
     if stats.get("by_zone"):  # D3: win-rate ต่อโซนที่เข้า
         lines.append("• ตามโซนที่เข้า:")
         for z, zs in sorted(stats["by_zone"].items(), key=lambda kv: -kv[1]["n"]):
-            from core.signals import zone_label
             lines.append(f"    {zone_label(z)}: {zs['win_rate']:.0f}% (n={zs['n']})")
     n = stats["trades"]
     avg = stats["avg_r"] or 0
     if n < 20:
         note = f"ℹ️ ตัวอย่างยังน้อย (n={n}) — ยังสรุป 'มี edge' ไม่ได้ · ดู /calib (วัดสัญญาณตรง ๆ)"
     elif avg > 0:
-        note = (f"✅ ค่าเฉลี่ย R เป็นบวก — แต่มาจากไม้ที่คุณเลือกเข้า/ปิดเอง (selection bias)\n"
+        note = ("✅ ค่าเฉลี่ย R เป็นบวก — แต่มาจากไม้ที่คุณเลือกเข้า/ปิดเอง (selection bias)\n"
                 "   วัด edge ของ 'สัญญาณ' แบบไม่ลำเอียงด้วย /calib")
     else:
         note = "⚠️ ค่าเฉลี่ย R ติดลบ — ทบทวนวินัย/กลยุทธ์"
@@ -1200,7 +1199,7 @@ def _handle_top5() -> str:
     picks = snap.get("picks") or []
     if not picks:
         return ("🏆 ยังไม่มีอันดับ — รอบสแกนถัดไปจะคัดให้\n"
-                "(บอตสแกนหุ้น US ทุก ~10 นาทีในเวลาตลาด · ลองใหม่อีกครั้งภายหลัง)")
+                "(อันดับคัดจากรอบสแกนรายวัน หลังตลาด US ปิด)")
 
     head = (f"🏆 Top {len(picks)} หุ้น US น่าถือรันเทรนด์\n"
             f"แท่งปิด {str(snap.get('bar_date') or '-')[:10]} · "
@@ -1212,7 +1211,7 @@ def _handle_top5() -> str:
         band = "🟩" if sc >= 70 else ("🟨" if sc >= 55 else "⬜")
         L = [f"{i}. {p['symbol']}  {band} {sc:.0f}/100  {zone_label(p.get('zone') or '')}"]
 
-        bits = [f"${_fmt_price(p.get('price'))}"]
+        bits = [f"ปิด ${_fmt_price(p.get('price'))}"]
         if p.get("rs_rank") is not None:
             bits.append(f"RS {p['rs_rank']:.0f}")
         if p.get("stage_label"):
@@ -1239,8 +1238,25 @@ def _handle_top5() -> str:
             "🟩 ≥70 น่าเข้า · 🟨 55-69 เฝ้าดู · ⬜ <55 รอจังหวะ\n"
             "คะแนน = ต้นเทรนด์ 40 + RS 20 + Stage 18 + setup 15 + แรงเงิน 7 − หักปลายเทรนด์\n"
             "⚠️ = สัญญาณปลายเทรนด์ (ไล่ราคาเสี่ยง/ถือแล้วพิจารณาขาย)\n"
+            "ราคาคือราคาปิดของแท่งล่าสุด ไม่ใช่ราคาสด · ผลย้อนหลัง /picks\n"
             "เปิดสถานะจริงด้วย /buy SYM us")
     return head + "\n\n" + "\n\n".join(blocks) + "\n\n" + foot
+
+
+def _handle_picks() -> str:
+    """🎯 คำแนะนำที่เคยให้ไป ผลเป็นยังไง — forward-test ของ /top5 (ไม่ fetch อะไรใหม่)"""
+    from watchlist import picks as picks_log
+    rows = picks_log.active()
+    out = [picks_log.summary()]
+    if rows:
+        L = ["\n📋 กำลังติดตาม (ใหม่สุดก่อน)"]
+        for r in rows:
+            done = [f"{h}แท่ง {r[f'r{h}']['ret_pct']:+.1f}%"
+                    for h in (5, 10, 20) if isinstance(r.get(f"r{h}"), dict)]
+            tail = " · ".join(done) if done else "ยังไม่ครบ 5 แท่ง"
+            L.append(f"• {r['symbol']} (อันดับ {r.get('rank', '-')} วันที่ {r.get('bar_date', '-')}) — {tail}")
+        out.append("\n".join(L))
+    return "\n".join(out)
 
 
 def _handle_list() -> str:
@@ -1288,6 +1304,7 @@ _HELP = (
     "สถิติ/ความรู้:\n"
     "• /stats — สถิติ win-rate / R / expectancy (จากไม้ที่คุณปิด)\n"
     "• /calib — 🔮 win-rate ของ 'สัญญาณ' จริง (forward-test ไม่ลำเอียง)\n"
+    "• /picks — 🎯 คำแนะนำ Top5 ที่ผ่านมา ถือแล้วได้จริงไหม (5/10/20 แท่ง)\n"
     "• /zone — ความหมาย 6 โซน CDC\n"
     "• /macro — ปฏิทินมาโคร US (FOMC/CPI/จ้างงาน) 7 วันข้างหน้า\n"
     "• /news [SYMBOL] — ข่าวล่าสุด 24 ชม. (บอตเตือนข่าวด่วนหุ้นที่ถืออัตโนมัติทุก ~10 นาที)\n"
@@ -1333,6 +1350,8 @@ def _dispatch(text: str) -> str:
         return _handle_list()
     if cmd in ("top5", "top"):
         return _handle_top5()
+    if cmd == "picks":
+        return _handle_picks()
     if cmd == "scan":
         return _handle_scan(args)
     if cmd == "edit":
