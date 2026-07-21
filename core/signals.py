@@ -87,6 +87,7 @@ class Signal:
     bars_in_zone: Optional[int] = None  # อยู่โซนปัจจุบันมากี่แท่งติดกัน (น้อย=เพิ่งพลิก=ต้นเทรนด์)
     ret20_pct: Optional[float] = None  # ผลตอบแทน 20 แท่งล่าสุด (%)
     max_day_up_pct: Optional[float] = None  # วันที่ขึ้นแรงสุดใน 20 แท่ง (%) — ไว้จับ spike ข่าว/สัญญา
+    max_day_up60_pct: Optional[float] = None  # วันที่ขึ้นแรงสุดใน 60 แท่ง (%) — จับ spike ที่เกิน 1 เดือนแล้ว (เคส RAMP)
     dollar_vol_m: Optional[float] = None  # มูลค่าซื้อขายเฉลี่ย/วัน 20 แท่ง (ล้าน$) — ไว้กรองสภาพคล่อง
 
     def stars(self) -> str:
@@ -543,15 +544,20 @@ def compute_signal(
 
     # ผลตอบแทน 20 แท่ง + วันขึ้นแรงสุด + มูลค่าซื้อขาย — ไว้จับ "ขึ้นเพราะข่าววันเดียว" (spike)
     # และกรองหุ้นสภาพคล่องต่ำ (numpy ล้วน — บล็อกนี้รันทุก ticker ห้ามช้า)
-    ret20 = max_day_up = dvol = None
+    # หน้าต่าง spike ต้อง 60 แท่ง ไม่ใช่ 20: หุ้นโดนซื้อกิจการ/สัญญาใหญ่ (เคสจริง: RAMP)
+    # spike เกิดเดือนกว่าแล้วแต่ราคายังค้างสูง — หน้าต่างสั้นมองไม่เห็นจึงหลุดเข้า Top picks
+    ret20 = max_day_up = max_day_up60 = dvol = None
     try:
-        _t = min(len(df), 21)
-        _cl = close.to_numpy()[-_t:]
-        if _t >= 5 and not pd.isna(_cl).any() and (_cl[:-1] > 0).all():
-            _r = _cl[1:] / _cl[:-1] - 1.0
-            max_day_up = round(float(_r.max()) * 100, 1)
-            if _cl[0] > 0:
-                ret20 = round(float(_cl[-1] / _cl[0] - 1.0) * 100, 1)
+        _t60 = min(len(df), 61)
+        _cl60 = close.to_numpy()[-_t60:]
+        if _t60 >= 5 and not pd.isna(_cl60).any() and (_cl60[:-1] > 0).all():
+            _r60 = _cl60[1:] / _cl60[:-1] - 1.0
+            max_day_up60 = round(float(_r60.max()) * 100, 1)
+            _r20 = _r60[-20:]                      # 20 แท่งท้าย = subset ของ 60
+            max_day_up = round(float(_r20.max()) * 100, 1)
+            _c0 = _cl60[-min(21, len(_cl60))]
+            if _c0 > 0:
+                ret20 = round(float(_cl60[-1] / _c0 - 1.0) * 100, 1)
         _vo = volume.to_numpy()[-min(len(df), 20):]
         _cl2 = close.to_numpy()[-len(_vo):]
         _dv = _vo * _cl2
@@ -595,5 +601,6 @@ def compute_signal(
         bars_in_zone=bars_in_zone,
         ret20_pct=ret20,
         max_day_up_pct=max_day_up,
+        max_day_up60_pct=max_day_up60,
         dollar_vol_m=dvol,
     )

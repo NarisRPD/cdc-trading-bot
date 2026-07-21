@@ -48,21 +48,38 @@ class S:
     def __init__(self, **kw):
         self.max_day_up_pct = None
         self.ret20_pct = None
+        self.max_day_up60_pct = None
         self.dollar_vol_m = None
+        self.atr = None
+        self.close = None
         self.__dict__.update(kw)
 
 
 print("[1] spike_flags — จับขาขึ้นหลอก (RAMP-case)")
-ok_("พุ่งวันเดียว +25% → ธง", bool(ranking.spike_flags(S(max_day_up_pct=25.0, ret20_pct=28.0))))
+ok_("พุ่งวันเดียว +25% → ธง",
+    bool(ranking.spike_flags(S(max_day_up_pct=25.0, max_day_up60_pct=25.0, ret20_pct=28.0))))
+
+# เคส RAMP ตัวจริงที่หลุดรอบแรก: spike เกิดเดือนกว่าแล้ว — หน้าต่าง 20 แท่งมองไม่เห็น
+# (max 20 แท่งเหลือ 2% เพราะราคาแบน) แต่ 60 แท่งยังเห็น +30%
+ok_("spike เก่ากว่า 1 เดือน (20แท่ง=2% แต่ 60แท่ง=30%) → ต้องยังโดนธง",
+    bool(ranking.spike_flags(S(max_day_up_pct=2.0, max_day_up60_pct=30.0, ret20_pct=1.0))))
+
+# ลายเซ็นหุ้นติดดีลซื้อกิจการ: เคยพุ่ง +14% แล้วราคาแบนสนิท (ATR 0.8% ของราคา)
+ok_("พุ่ง +14% แล้วแบนสนิท (ATR 0.8%/วัน) → ธงรูปแบบโดนซื้อกิจการ",
+    bool(ranking.spike_flags(S(max_day_up60_pct=14.0, atr=0.8, close=100.0))))
+check("พุ่ง +14% แต่ยังแกว่งปกติ (ATR 3%/วัน) → ไม่ธง",
+      ranking.spike_flags(S(max_day_up60_pct=14.0, atr=3.0, close=100.0)), [])
+check("แบนแต่ไม่เคยพุ่ง (หุ้น defensive เฉย ๆ) → ไม่ธง",
+      ranking.spike_flags(S(max_day_up60_pct=4.0, atr=0.8, close=100.0)), [])
 ok_("กำไรเดือน +12% มาจากวันเดียว +10% → ธง",
-    bool(ranking.spike_flags(S(max_day_up_pct=10.0, ret20_pct=12.0))))
+    bool(ranking.spike_flags(S(max_day_up_pct=10.0, max_day_up60_pct=10.0, ret20_pct=12.0))))
 check("เทรนด์แท้ (ขึ้นเดือน +15% วันแรงสุด +4%) → ไม่ธง",
-      ranking.spike_flags(S(max_day_up_pct=4.0, ret20_pct=15.0)), [])
+      ranking.spike_flags(S(max_day_up_pct=4.0, max_day_up60_pct=6.0, ret20_pct=15.0)), [])
 check("ข้อมูลขาด → ไม่ธง (ไม่ลงโทษข้อมูลขาด)", ranking.spike_flags(S()), [])
 ok_("สภาพคล่องต่ำ ($2M/วัน) → ธง", bool(ranking.spike_flags(S(dollar_vol_m=2.0))))
 check("สภาพคล่องพอ ($8M/วัน) → ไม่ธง", ranking.spike_flags(S(dollar_vol_m=8.0)), [])
 ok_("วันแรงสุด +9% แต่เดือนขึ้น +30% (เทรนด์จริง) → ไม่ธง",
-    not ranking.spike_flags(S(max_day_up_pct=9.0, ret20_pct=30.0)))
+    not ranking.spike_flags(S(max_day_up_pct=9.0, max_day_up60_pct=9.0, ret20_pct=30.0)))
 
 print("\n[2] growth_verdict — ขนาด + เติบโต (ตามที่ผู้ใช้เลือก: $300M-$100B · ขาดทุนได้ถ้าโต ≥20%)")
 check("mega cap $150B → fail", growth_verdict({"mcap_m": 150_000})[0], "fail")

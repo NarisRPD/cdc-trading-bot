@@ -1345,7 +1345,7 @@ _HELP = (
     "• /callsell SYM [ตลาด] — ปิด Call\n"
     "• /putsell SYM [ตลาด] — ปิด Put\n\n"
     "จัดการ:\n"
-    "• /top5 — 🏆 หุ้นเติบโตเล็ก-กลาง US น่าถือรันเทรนด์ (สูงสุด 10 ตัว + สัดส่วนแบ่งเงิน)\n"
+    "• /top10 — 🏆 หุ้นเติบโตเล็ก-กลาง US น่าถือรันเทรนด์ (สูงสุด 10 ตัว + สัดส่วนแบ่งเงิน)\n"
     "• /list — ดูทุกตัว + %P/L + โซน + SL/TP\n"
     "• /scan — สแกนทั้ง 4 กลุ่ม | /scan crypto|usstocks|thaistocks|commodity\n"
     "• /scan SYM — เช็กตัวเดียว ตอบทันที (เช่น /scan AAPL, /scan BTC, /scan PTT.BK)\n"
@@ -1399,7 +1399,7 @@ def _dispatch(text: str) -> str:
         return _handle_close(cmd, args)
     if cmd == "list":
         return _handle_list()
-    if cmd in ("top5", "top"):
+    if cmd in ("top10", "top5", "top"):   # top5 = ชื่อเก่า คงไว้ตามความเคยชิน
         return _handle_top5()
     if cmd == "picks":
         return _handle_picks()

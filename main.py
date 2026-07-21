@@ -1815,7 +1815,7 @@ def run_premarket_report(cfg: Config) -> int:
         parts.append("\n".join(al))
     parts.append("─────────\n"
                  "ราคาข้างบนคือ 'ราคาปิด' ของแท่งล่าสุด ไม่ใช่ราคาสด\n"
-                 "ดูอันดับล่าสุด /top5 · ผลย้อนหลังของคำแนะนำ /picks")
+                 "ดูอันดับล่าสุด /top10 · ผลย้อนหลังของคำแนะนำ /picks")
 
     try:
         ok = send_telegram("\n\n".join(parts), token=cfg.telegram_bot_token,
