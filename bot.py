@@ -1209,7 +1209,8 @@ def _handle_top5() -> str:
     for i, p in enumerate(picks, 1):
         sc = p.get("score") or 0
         band = "🟩" if sc >= 70 else ("🟨" if sc >= 55 else "⬜")
-        L = [f"{i}. {p['symbol']}  {band} {sc:.0f}/100  {zone_label(p.get('zone') or '')}"]
+        wt = f"  💰 {p['weight_pct']}%" if p.get("weight_pct") else ""
+        L = [f"{i}. {p['symbol']}  {band} {sc:.0f}/100{wt}  {zone_label(p.get('zone') or '')}"]
 
         bits = [f"ปิด ${_fmt_price(p.get('price'))}"]
         # หุ้นที่ feed ค้างติดอันดับได้ด้วยแท่งเก่าถึง 8 วัน (max_stale_days_equity)
@@ -1233,18 +1234,38 @@ def _handle_top5() -> str:
             sl = price - 2.0 * atr
             L.append(f"   🎯 เข้า ≤ ${_fmt_price(price + 0.3 * atr)} · "
                      f"SL ${_fmt_price(sl)} ({(sl / price - 1) * 100:+.1f}%)")
+            if p.get("weight_pct") and p.get("stop_dist_pct"):
+                # เจ็บจริงเป็น % ของ "ก้อนทั้งหมด" ถ้าตัวนี้โดน SL — เท่ากันทุกตัวคือเป้าหมายของการถ่วง
+                hit = p["weight_pct"] / 100.0 * p["stop_dist_pct"]
+                L.append(f"   💰 ใส่ {p['weight_pct']}% ของก้อน · โดน SL = เสีย {hit:.1f}% ของก้อน")
 
         if p.get("late"):
             L.append("   ⚠️ " + " · ".join(p["late"]))
         blocks.append("\n".join(L))
 
-    foot = ("─────────\n"
-            "🟩 ≥70 น่าเข้า · 🟨 55-69 เฝ้าดู · ⬜ <55 รอจังหวะ\n"
-            "คะแนน = ต้นเทรนด์ 40 + RS 20 + Stage 18 + setup 15 + แรงเงิน 7 − หักปลายเทรนด์\n"
-            "⚠️ = สัญญาณปลายเทรนด์ (ไล่ราคาเสี่ยง/ถือแล้วพิจารณาขาย)\n"
-            "ราคาคือราคาปิดของแท่งล่าสุด ไม่ใช่ราคาสด · ผลย้อนหลัง /picks\n"
-            "เปิดสถานะจริงด้วย /buy SYM us")
-    return head + "\n\n" + "\n\n".join(blocks) + "\n\n" + foot
+    foot = ["─────────",
+            "🟩 ≥70 น่าเข้า · 🟨 55-69 เฝ้าดู · ⬜ <55 รอจังหวะ",
+            "คะแนน = ต้นเทรนด์ 40 + RS 20 + Stage 18 + setup 15 + แรงเงิน 7 − หักปลายเทรนด์"]
+    if any(p.get("weight_pct") for p in picks):
+        foot.append(_alloc_note(snap))
+    foot += ["⚠️ = สัญญาณปลายเทรนด์ (ไล่ราคาเสี่ยง/ถือแล้วพิจารณาขาย)",
+             "ราคาคือราคาปิดของแท่งล่าสุด ไม่ใช่ราคาสด · ผลย้อนหลัง /picks",
+             "เปิดสถานะจริงด้วย /buy SYM us"]
+    return head + "\n\n" + "\n\n".join(blocks) + "\n\n" + "\n".join(foot)
+
+
+def _alloc_note(snap: dict) -> str:
+    """คำอธิบายสัดส่วน 💰 — ต้องบอกให้ชัดว่าเป็น % ของอะไร และตัวเลขนี้มาจากไหน"""
+    L = ["💰 = สัดส่วนของ 'เงินก้อนที่คุณแบ่งมาลง 5 ตัวนี้' ไม่ใช่ % ของพอร์ตทั้งหมด"]
+    if snap.get("alloc_basis") == "risk":
+        L.append("   ถ่วงด้วยระยะถึง SL (ตัวเหวี่ยงได้น้อยลง) → โดน SL แล้วเจ็บพอ ๆ กันทุกตัว")
+    else:
+        L.append("   (ข้อมูล ATR ไม่พอ — เกลี่ยเท่ากันทุกตัว)")
+    if snap.get("total_risk_pct") is not None:
+        L.append(f"   ⚠️ ถ้าโดน SL ครบทั้ง {len(snap.get('picks') or [])} ตัว = เสีย "
+                 f"~{snap['total_risk_pct']:.1f}% ของก้อนนี้")
+    L.append("   บอทไม่รู้เงินรวม/ของที่ถืออยู่ที่อื่นของคุณ — จะแบ่งมาเท่าไรคุณกำหนดเอง")
+    return "\n".join(L)
 
 
 def _handle_picks() -> str:

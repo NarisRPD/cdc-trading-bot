@@ -326,8 +326,22 @@ def _top_picks_snapshot(signals: List[Signal], bar) -> list:
             "setup_score": s.setup_score,
         })
 
+    # สัดส่วนแบ่งเงินระหว่างตัวที่ติดอันดับ — คำนวณที่นี่ครั้งเดียว เก็บลง snapshot
+    # เพื่อให้ /top5 กับรายงานก่อนตลาดเปิดโชว์ตัวเลขเดียวกันเสมอ (คำนวณ 2 ที่จะเพี้ยนกันได้)
+    alloc = {"weights": [], "total_risk_pct": None, "basis": "equal"}
+    try:
+        from core import alloc as alloc_mod
+        alloc = alloc_mod.allocate(picks, tilt=float(os.getenv("ALLOC_SCORE_TILT", "0.5") or 0.5))
+        for p, w, d in zip(picks, alloc["weights"], alloc["risk_pct"]):
+            p["weight_pct"] = w
+            p["stop_dist_pct"] = round(d, 1) if d is not None else None
+    except Exception as e:  # noqa: BLE001
+        log.warning("allocate failed: %s", e)
+
     store.save_json(_TOP5_FILE, {
         "bar_date": str(bar)[:10] if bar is not None else None,
+        "alloc_basis": alloc.get("basis"),
+        "total_risk_pct": alloc.get("total_risk_pct"),
         # generated_at = เวลาที่ "เขียนไฟล์นี้" — จำเป็นเพราะ bar_date อย่างเดียวแยกไม่ออกว่า
         # ตลาดหยุด (bar_date เก่าเป็นเรื่องปกติ) หรือรอบสแกนล่มจนไฟล์ค้าง
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1629,7 +1643,8 @@ def run_premarket_report(cfg: Config) -> int:
     for i, p in enumerate(picks, 1):
         sym, sc = p.get("symbol", "?"), p.get("score") or 0
         band = "🟩" if sc >= 70 else ("🟨" if sc >= 55 else "⬜")
-        L = [f"{i}. {sym}  {band} {sc:.0f}/100{_rank_move(sym, i, prev)}"]
+        wt = f"  💰 {p['weight_pct']}%" if p.get("weight_pct") else ""
+        L = [f"{i}. {sym}  {band} {sc:.0f}/100{wt}{_rank_move(sym, i, prev)}"]
         bits = []
         if p.get("price") is not None:
             bits.append(f"ปิด ${p['price']:,.2f}")
@@ -1661,6 +1676,13 @@ def run_premarket_report(cfg: Config) -> int:
         parts.append("⚠️ ติดธงปลายเทรนด์ — ไล่ราคาเสี่ยง\n" + "\n".join(late_lines))
     if held:
         parts.append("📌 คุณถืออยู่แล้ว: " + ", ".join(held) + "\n   (จังหวะขายให้ยึดการเตือนของ /list เป็นหลัก)")
+    if any(p.get("weight_pct") for p in picks):
+        al = ["💰 สัดส่วนแบ่งเงิน — เป็น % ของ 'ก้อนที่คุณแบ่งมาลงชุดนี้' ไม่ใช่ทั้งพอร์ต"]
+        if snap.get("alloc_basis") == "risk":
+            al.append("   ถ่วงด้วยระยะถึง SL → ตัวเหวี่ยงได้เงินน้อยลง เจ็บพอ ๆ กันทุกตัวถ้าโดน SL")
+        if snap.get("total_risk_pct") is not None:
+            al.append(f"   ⚠️ โดน SL ครบทุกตัว = เสีย ~{snap['total_risk_pct']:.1f}% ของก้อนนี้")
+        parts.append("\n".join(al))
     parts.append("─────────\n"
                  "ราคาข้างบนคือ 'ราคาปิด' ของแท่งล่าสุด ไม่ใช่ราคาสด\n"
                  "ดูอันดับล่าสุด /top5 · ผลย้อนหลังของคำแนะนำ /picks")
