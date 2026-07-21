@@ -116,6 +116,7 @@ def fundamentals(symbol: str) -> dict:
             d["roe"] = m.get("roeTTM")
             d["rev_g"] = m.get("revenueGrowthTTMYoy")
             d["eps_g"] = m.get("epsGrowthTTMYoy")
+            d["mcap_m"] = m.get("marketCapitalization")  # ล้าน$ — อยู่ใน response เดิมอยู่แล้ว
         earn = _fh("/stock/earnings", {"symbol": symbol})
         if isinstance(earn, list) and earn:
             d["last_surprise"] = earn[0].get("surprisePercent")
@@ -248,6 +249,51 @@ def _quality_parts(d: dict) -> tuple:
         ratio = score / n
         verdict = "แข็งแรง ✅" if ratio >= 0.75 else ("อ่อน ⚠️" if ratio <= 0.4 else "ปานกลาง")
     return parts, verdict, (score, n)
+
+
+def growth_verdict(d: dict, *, mcap_min_m: float = 300.0, mcap_max_m: float = 100_000.0,
+                   min_rev_g: float = 20.0) -> "tuple[str, str]":
+    """ตัดสิน "หุ้นเติบโต ขนาดเล็ก-กลาง พื้นฐานผ่าน" จาก dict ของ fundamentals()
+
+    pure logic (แยกจากการยิงเน็ต — เทสได้ offline) คืน (verdict, เหตุผลไทย):
+      "fail"    = รู้ข้อมูลแล้วไม่ผ่านชัด ๆ → ตัดออก
+      "pass"    = ผ่านเกณฑ์
+      "unknown" = ข้อมูลไม่พอตัดสิน → ปล่อยผ่าน (ข้อมูลขาดไม่ใช่ความผิด) แต่ติดป้ายให้เห็น
+
+    เกณฑ์ (ตามที่ผู้ใช้เลือก):
+      · ขนาด mcap_min_m..mcap_max_m ล้าน$ (default $300M-$100B = ตัดเฉพาะ mega cap)
+      · พื้นฐาน: มีกำไร (net_margin > 0) หรือ ยังขาดทุนแต่รายได้โต ≥ min_rev_g%
+    """
+    mcap = d.get("mcap_m")
+    if mcap is not None:
+        try:
+            mcap = float(mcap)
+            if mcap > mcap_max_m:
+                return "fail", f"ใหญ่เกิน (${mcap/1000:.0f}B)"
+            if mcap < mcap_min_m:
+                return "fail", f"เล็กเกิน (${mcap:.0f}M)"
+        except (TypeError, ValueError):
+            mcap = None
+
+    nm, rev_g = d.get("net_margin"), d.get("rev_g")
+    try:
+        nm = float(nm) if nm is not None else None
+        rev_g = float(rev_g) if rev_g is not None else None
+    except (TypeError, ValueError):
+        nm = rev_g = None
+
+    if nm is not None and nm > 0:
+        tag = f"กำไรแล้ว (margin {nm*100:.0f}%)"
+        if rev_g is not None:
+            tag += f" · รายได้โต {rev_g:+.0f}%"
+        return "pass", tag
+    if rev_g is not None and rev_g >= min_rev_g:
+        return "pass", f"ยังขาดทุนแต่รายได้โต {rev_g:+.0f}% (growth)"
+    if nm is not None and rev_g is not None:
+        return "fail", f"ขาดทุน + รายได้โตแค่ {rev_g:+.0f}%"
+    if mcap is not None and nm is None and rev_g is None:
+        return "unknown", "รู้แค่ขนาด — งบไม่มีข้อมูล"
+    return "unknown", "ข้อมูลพื้นฐานไม่พอ"
 
 
 def fundamental_block(symbol: str) -> str:

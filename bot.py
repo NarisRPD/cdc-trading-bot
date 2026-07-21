@@ -1226,7 +1226,12 @@ def _handle_top5() -> str:
         L.append("   " + " · ".join(bits))
 
         if p.get("sector"):
-            L.append(f"   🏷 {p['sector']}")
+            tag = p["sector"]
+            if p.get("mcap_b"):
+                tag += f" · ${p['mcap_b']:.1f}B"
+            L.append(f"   🏷 {tag}")
+        if p.get("fund_note"):
+            L.append(f"   🏢 {p['fund_note']}")
         if p.get("reasons"):
             L.append("   💡 " + " · ".join(p["reasons"]))
 
@@ -1340,7 +1345,7 @@ _HELP = (
     "• /callsell SYM [ตลาด] — ปิด Call\n"
     "• /putsell SYM [ตลาด] — ปิด Put\n\n"
     "จัดการ:\n"
-    "• /top5 — 🏆 หุ้น US น่าถือรันเทรนด์ 5 อันดับ (ต้นเทรนด์ = น่าเข้า · ปลายเทรนด์ = เตือน)\n"
+    "• /top5 — 🏆 หุ้นเติบโตเล็ก-กลาง US น่าถือรันเทรนด์ (สูงสุด 10 ตัว + สัดส่วนแบ่งเงิน)\n"
     "• /list — ดูทุกตัว + %P/L + โซน + SL/TP\n"
     "• /scan — สแกนทั้ง 4 กลุ่ม | /scan crypto|usstocks|thaistocks|commodity\n"
     "• /scan SYM — เช็กตัวเดียว ตอบทันที (เช่น /scan AAPL, /scan BTC, /scan PTT.BK)\n"

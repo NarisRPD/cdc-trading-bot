@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 _SOURCES = [
     ("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", "S&P500"),
     ("https://en.wikipedia.org/wiki/Nasdaq-100", "NASDAQ100"),
+    ("https://en.wikipedia.org/wiki/List_of_S%26P_400_companies", "S&P400"),
     ("https://en.wikipedia.org/wiki/List_of_S%26P_600_companies", "S&P600"),
 ]
 

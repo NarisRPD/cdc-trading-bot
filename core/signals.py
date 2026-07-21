@@ -85,6 +85,9 @@ class Signal:
     setup_factors: Optional[list] = None  # [{key,delta,text}] ปัจจัยที่ติด — ไว้โชว์ 🧭 Setup
     ext_atr: Optional[float] = None  # |close−EMA12| / ATR = ยืดจากเส้นกี่ ATR (น้อย=ต้นเทรนด์ · มาก=ปลาย)
     bars_in_zone: Optional[int] = None  # อยู่โซนปัจจุบันมากี่แท่งติดกัน (น้อย=เพิ่งพลิก=ต้นเทรนด์)
+    ret20_pct: Optional[float] = None  # ผลตอบแทน 20 แท่งล่าสุด (%)
+    max_day_up_pct: Optional[float] = None  # วันที่ขึ้นแรงสุดใน 20 แท่ง (%) — ไว้จับ spike ข่าว/สัญญา
+    dollar_vol_m: Optional[float] = None  # มูลค่าซื้อขายเฉลี่ย/วัน 20 แท่ง (ล้าน$) — ไว้กรองสภาพคล่อง
 
     def stars(self) -> str:
         return "⭐" * self.score + f" ({self.score}/4)" if self.score > 0 else "(0/4)"
@@ -538,6 +541,26 @@ def compute_signal(
     except Exception:  # noqa: BLE001
         bars_in_zone = None
 
+    # ผลตอบแทน 20 แท่ง + วันขึ้นแรงสุด + มูลค่าซื้อขาย — ไว้จับ "ขึ้นเพราะข่าววันเดียว" (spike)
+    # และกรองหุ้นสภาพคล่องต่ำ (numpy ล้วน — บล็อกนี้รันทุก ticker ห้ามช้า)
+    ret20 = max_day_up = dvol = None
+    try:
+        _t = min(len(df), 21)
+        _cl = close.to_numpy()[-_t:]
+        if _t >= 5 and not pd.isna(_cl).any() and (_cl[:-1] > 0).all():
+            _r = _cl[1:] / _cl[:-1] - 1.0
+            max_day_up = round(float(_r.max()) * 100, 1)
+            if _cl[0] > 0:
+                ret20 = round(float(_cl[-1] / _cl[0] - 1.0) * 100, 1)
+        _vo = volume.to_numpy()[-min(len(df), 20):]
+        _cl2 = close.to_numpy()[-len(_vo):]
+        _dv = _vo * _cl2
+        _dv = _dv[~pd.isna(_dv)]
+        if len(_dv):
+            dvol = round(float(_dv.mean()) / 1e6, 1)
+    except Exception:  # noqa: BLE001
+        pass
+
     setup = None
     if compute_setup and eval_is_buy is not None:
         setup = setup_quality(df, eval_is_buy, atr_val=atr_last,
@@ -570,4 +593,7 @@ def compute_signal(
         setup_factors=(setup or {}).get("factors"),
         ext_atr=ext,
         bars_in_zone=bars_in_zone,
+        ret20_pct=ret20,
+        max_day_up_pct=max_day_up,
+        dollar_vol_m=dvol,
     )

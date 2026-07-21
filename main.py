@@ -25,6 +25,7 @@ from notify.telegram import send_telegram as _send_telegram_raw
 from universe.set100 import get_set100_tickers, strip_bk_suffix
 from universe.sp500 import get_sp500_tickers
 from universe.nasdaq100 import get_nasdaq100_tickers
+from universe.sp400 import get_sp400_tickers
 from universe.sp600 import get_sp600_tickers
 
 # ─── logging ──────────────────────────────────────────────────────────
@@ -282,44 +283,116 @@ def run_crypto(cfg: Config) -> GroupResult:
 _TOP5_FILE = "top5_latest.json"
 
 
-def _top_picks_snapshot(signals: List[Signal], bar) -> list:
-    """คัด 'หุ้น US น่าถือรันเทรนด์' จากสัญญาณที่สแกนเสร็จแล้ว → เซฟไว้ให้ /top5 อ่าน
+def _fund_gate(symbols: list) -> dict:
+    """ด่านพื้นฐาน "หุ้นเติบโต ขนาดเล็ก-กลาง" — คืน {symbol: (verdict, เหตุผล)}
 
-    ทำตอนสแกนรอบปกติ (ไม่ยิง Telegram) เพราะข้อมูลครบอยู่แล้ว = ไม่ต้องดึงซ้ำ 1,100 ตัว
+    ยิง API เฉพาะตัวที่ผ่านด่านเทคนิคแล้ว (ไม่ใช่ทั้ง universe) + cache 12 ชม. ใน GCS
+    Finnhub ไม่พร้อม/ล่ม → คืน unknown ทุกตัว (ปล่อยผ่าน — ข้อมูลขาดไม่ใช่ความผิด)
+    """
+    from data import fundamentals as fnd
+    out: dict = {}
+    if not fnd.enabled():
+        return {sym: ("unknown", "Finnhub ไม่พร้อม") for sym in symbols}
+    lo = float(os.getenv("MCAP_MIN_M", "300") or 300)
+    hi = float(os.getenv("MCAP_MAX_M", "100000") or 100000)
+    gmin = float(os.getenv("GROWTH_MIN_REV_G", "20") or 20)
+    for sym in symbols:
+        try:
+            d = fnd.fundamentals(sym)
+            out[sym] = fnd.growth_verdict(d, mcap_min_m=lo, mcap_max_m=hi, min_rev_g=gmin)
+            out[sym] = (*out[sym], d.get("mcap_m"))
+        except Exception as e:  # noqa: BLE001
+            log.debug("fund gate %s: %s", sym, e)
+            out[sym] = ("unknown", "ดึงข้อมูลไม่ได้", None)
+    return out
+
+
+def _top_picks_snapshot(signals: List[Signal], bar, items: Optional[dict] = None) -> list:
+    """คัด 'หุ้นเติบโตเล็ก-กลาง น่าถือรันเทรนด์' จากสัญญาณที่สแกนเสร็จแล้ว → เซฟให้ /top5 อ่าน
+
+    ลำดับด่าน (เรียงจากถูก→แพง เพื่อให้ของแพงทำงานกับตัวน้อยที่สุด):
+      1) เทคนิค: passes_gate + buy_score (ฟรี — คำนวณแล้ว)
+      2) spike/สภาพคล่อง: ตัด "ขึ้นเพราะข่าววันเดียว" (RAMP-case) + ซื้อขายเบาบาง (ฟรี)
+      3) พื้นฐาน: ขนาด $300M-$100B + (มีกำไร หรือ รายได้โต ≥20%) (Finnhub, cache 12 ชม.)
+      4) กระจาย: จำกัดต่อเซกเตอร์ + วัด correlation ราคาจริง (กันเคส HCSG ที่ป้าย
+         GICS บอก "อุตสาหกรรม" แต่ราคาวิ่งตาม healthcare — ป้ายหลอกได้ ราคาไม่หลอก)
+
     ถ้าพังต้อง *ไม่* ทำให้สแกนหลักล่ม → ห่อ try ทั้งก้อนที่ผู้เรียก
     คืน list ของ picks เพื่อให้ผู้เรียกส่งต่อให้ watchlist.picks (F3) ได้โดยไม่ต้องอ่านไฟล์ซ้ำ
     """
     from core import ranking
     from watchlist import store
 
-    n = int(os.getenv("TOP_PICKS_N", "5"))
-    scored = []
+    n = int(os.getenv("TOP_PICKS_N", "10"))
+    min_dv = float(os.getenv("MIN_DOLLAR_VOL_M", "5") or 5)
+
+    scored, spiked = [], 0
     for s in signals:
         if not ranking.passes_gate(s):
+            continue
+        if ranking.spike_flags(s, min_dollar_vol_m=min_dv):
+            spiked += 1        # ขาขึ้นหลอก (ข่าวพุ่งวันเดียว) / สภาพคล่องต่ำ — ตัดตั้งแต่ต้น
             continue
         sc, parts = ranking.buy_score(s)
         scored.append((sc, parts, s))
     scored.sort(key=lambda t: -t[0])
 
-    # กระจายเซกเตอร์ — RS วัดเทียบทั้งตลาด เซกเตอร์ที่กำลังนำจะกวาดอันดับไปทั้งหมด
-    # ได้ Top 5 เซกเตอร์เดียว = เดิมพันก้อนเดียว และตัวเลขความเสี่ยงรวมจะต่ำกว่าจริง
-    # (สูตรแบ่งเงินคิดบนสมมติฐานว่าแต่ละตัวเป็นอิสระ ซึ่งผิดเมื่ออยู่เซกเตอร์เดียวกัน)
+    # ── ด่านพื้นฐาน: เช็กเฉพาะหัวตาราง (พอสำหรับคัด n ตัว) ไม่ใช่ทั้ง pool ──
+    fund_cap = min(len(scored), max(n * 4, 24))
+    fund = _fund_gate([t[2].symbol for t in scored[:fund_cap]])
+    kept = []
+    for t in scored[:fund_cap]:
+        v = fund.get(t[2].symbol) or ("unknown", "", None)
+        if v[0] == "fail":
+            continue
+        kept.append(t)
+    kept += scored[fund_cap:]          # ตัวที่ยังไม่ได้เช็ก — ตามหลังตัวที่เช็กแล้วเสมอ
+
+    # ── กระจาย: เซกเตอร์ (ป้าย) + correlation (ราคาจริง) ในลูปเดียว ──
     smap: dict = {}
     try:
-        from universe.sector_map import sector_map, diversify
+        from universe.sector_map import sector_map
         smap = sector_map()
     except Exception as e:  # noqa: BLE001 — ไม่มี sector ก็ยังจัดอันดับได้ตามปกติ
         log.warning("sector map ไม่พร้อม (%s) — ข้ามการกระจายเซกเตอร์", e)
-        diversify = None
 
     max_per = int(os.getenv("MAX_PER_SECTOR", "2") or 2)
-    if diversify and smap:
-        top, used = diversify(scored, n, max_per,
-                              lambda t: smap.get(t[2].symbol))
-        log.info("กระจายเซกเตอร์ (≤%d ตัว/เซกเตอร์): %s", max_per,
+    max_corr = float(os.getenv("MAX_CORR", "0.75") or 0.75)
+    try:
+        from core import correlate
+    except Exception:  # noqa: BLE001
+        correlate = None
+
+    top, overflow, used = [], [], {}
+    for t in kept:
+        if len(top) >= n:
+            break
+        sym = t[2].symbol
+        sec = smap.get(sym)
+        if max_per > 0 and sec and used.get(sec, 0) >= max_per:
+            overflow.append(t)
+            continue
+        # วัดความสัมพันธ์ราคากับตัวที่เลือกไปแล้ว — ป้ายเซกเตอร์ต่างกันแต่วิ่งด้วยกันก็โดน
+        if correlate and items:
+            twin = correlate.too_correlated(sym, [x[2].symbol for x in top], items, max_corr)
+            if twin:
+                log.info("top picks: %s วิ่งตาม %s (corr ≥ %.2f) — ข้าม", sym, twin, max_corr)
+                overflow.append(t)
+                continue
+        top.append(t)
+        if sec:
+            used[sec] = used.get(sec, 0) + 1
+    for t in overflow:                 # ตลาดแคบจนหาไม่ครบ → ยอมรับตัวที่เกินโควตา
+        if len(top) >= n:
+            break
+        top.append(t)
+        sec = smap.get(t[2].symbol)
+        if sec:
+            used[sec] = used.get(sec, 0) + 1
+    if used:
+        log.info("กระจายเซกเตอร์ (≤%d ตัว/เซกเตอร์ · corr<%.2f · ตัด spike %d ตัว): %s",
+                 max_per, max_corr, spiked,
                  ", ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
-    else:
-        top = scored[:n]
 
     picks = []
     for sc, parts, s in top:
@@ -346,6 +419,16 @@ def _top_picks_snapshot(signals: List[Signal], bar) -> list:
             "stage_label": (s.stage or {}).get("label"),
             "setup_score": s.setup_score,
         })
+        # แนบผลด่านพื้นฐาน (ไว้โชว์ 🏢 ในข้อความ) — fund เก็บ (verdict, เหตุผล, mcap_m)
+        # โชว์เฉพาะเมื่อ "ผ่านด้วยข้อมูลจริง" — unknown ไม่ต้องพูด (ไม่มีข้อมูลก็เงียบไว้)
+        fv = fund.get(s.symbol)
+        if fv and fv[0] == "pass":
+            picks[-1]["fund_note"] = fv[1]
+        if fv and len(fv) > 2 and fv[2]:
+            try:
+                picks[-1]["mcap_b"] = round(float(fv[2]) / 1000.0, 1)  # ล้าน$ → พันล้าน$
+            except (TypeError, ValueError):
+                pass
 
     # สัดส่วนแบ่งเงินระหว่างตัวที่ติดอันดับ — คำนวณที่นี่ครั้งเดียว เก็บลง snapshot
     # เพื่อให้ /top5 กับรายงานก่อนตลาดเปิดโชว์ตัวเลขเดียวกันเสมอ (คำนวณ 2 ที่จะเพี้ยนกันได้)
@@ -376,10 +459,12 @@ def _top_picks_snapshot(signals: List[Signal], bar) -> list:
 
 
 def run_us_stocks(cfg: Config) -> GroupResult:
-    log.info("=== US Stocks (S&P500 + NASDAQ100 + S&P600) ===")
-    # รวม 3 ดัชนี dedup: S&P500 (ใหญ่) + NASDAQ-100 (เทค) + S&P600 (เล็กที่กำไรแล้ว)
+    log.info("=== US Stocks (S&P500 + NASDAQ100 + S&P400 + S&P600) ===")
+    # รวม 4 ดัชนี dedup: S&P500 (ใหญ่) + NASDAQ-100 (เทค) + S&P400 (กลาง) + S&P600 (เล็ก)
+    # S&P400/600 มีเกณฑ์กำไรเป็นบวกถึงเข้าดัชนีได้ → กรองหุ้นปั่นให้ชั้นหนึ่งแล้ว
     tickers = list(dict.fromkeys(
-        get_sp500_tickers() + get_nasdaq100_tickers() + get_sp600_tickers()
+        get_sp500_tickers() + get_nasdaq100_tickers()
+        + get_sp400_tickers() + get_sp600_tickers()
     ))
     log.info("US universe รวม %d ตัว (dedup แล้ว)", len(tickers))
     items = fetch_stocks_batch(tickers, period="2y")
@@ -391,7 +476,7 @@ def run_us_stocks(cfg: Config) -> GroupResult:
         reversal = _enrich_reversal(reversal, items, cfg)
     bar = max((s.bar_date for s in signals), default=None)
     try:  # เก็บ Top picks ไว้ให้ /top5 + ตามผลคำแนะนำเก่า — ห้ามทำให้สแกนหลักล่ม
-        picks = _top_picks_snapshot(signals, bar)
+        picks = _top_picks_snapshot(signals, bar, items=items)
         from watchlist import picks as picks_log
         picks_log.log_picks(picks, bar)
         # ส่ง items (DataFrame ที่ batch มาแล้วทั้ง universe) เข้าไปประเมินผลย้อนหลัง
@@ -1676,7 +1761,12 @@ def run_premarket_report(cfg: Config) -> int:
         if bits:
             L.append("   " + " · ".join(bits))
         if p.get("sector"):
-            L.append(f"   🏷 {p['sector']}")
+            tag = p["sector"]
+            if p.get("mcap_b"):
+                tag += f" · ${p['mcap_b']:.1f}B"
+            L.append(f"   🏷 {tag}")
+        if p.get("fund_note"):
+            L.append(f"   🏢 {p['fund_note']}")
         if p.get("reasons"):
             L.append("   💡 " + " · ".join(p["reasons"]))
         atr = p.get("atr")
