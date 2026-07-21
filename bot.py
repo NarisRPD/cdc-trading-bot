@@ -1246,11 +1246,8 @@ def _handle_top5() -> str:
                 hit = p["weight_pct"] / 100.0 * p["stop_dist_pct"]
                 usd = p.get("alloc_usd")
                 money = f" ≈ ${usd:,.0f}" if usd else ""
+                # ไม่เตือนเรื่องราคาหุ้นเดียวแพงกว่างบส่วนนี้ — ผู้ใช้ซื้อหุ้นเศษส่วน (fractional) ได้
                 L.append(f"   💰 ใส่ {p['weight_pct']}%{money} · โดน SL = เสีย {hit:.1f}% ของก้อน")
-                # งบส่วนนี้ซื้อไม่ถึง 1 หุ้น — บอกตรง ๆ ดีกว่าปล่อยให้ผู้ใช้งงหน้าโบรก
-                if usd and price and price > usd:
-                    L.append(f"   ⚠️ หุ้นละ ${_fmt_price(price)} แพงกว่างบส่วนนี้ "
-                             f"— ใช้หุ้นเศษส่วน (fractional) หรือเกลี่ยงบเอง")
 
         if p.get("late"):
             L.append("   ⚠️ " + " · ".join(p["late"]))
