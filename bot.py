@@ -88,12 +88,11 @@ def _trigger_scan_job(group: str | None = None) -> bool:
     project = GCP_PROJECT or proj
     url = (f"https://run.googleapis.com/v2/projects/{project}"
            f"/locations/{SCAN_REGION}/jobs/{SCAN_JOB}:run")
-    body: dict = {}
+    # สแกนที่ผู้ใช้สั่งเอง → ข้ามโหมด /pause (แจ้งเตือนอัตโนมัติเงียบ แต่ /scan ยังต้องตอบ)
+    env = [{"name": "IGNORE_PAUSE", "value": "true"}]
     if group:
-        # env override merge เฉพาะ execution นี้ (secret ของ job คงอยู่)
-        body = {"overrides": {"containerOverrides": [
-            {"env": [{"name": "SCAN_GROUPS", "value": group}]}
-        ]}}
+        env.append({"name": "SCAN_GROUPS", "value": group})  # env override merge (secret ของ job คงอยู่)
+    body: dict = {"overrides": {"containerOverrides": [{"env": env}]}}
     r = _rq.post(
         url,
         headers={"Authorization": f"Bearer {creds.token}",
@@ -987,6 +986,46 @@ def _handle_calib() -> str:
         return "อ่าน calibration ไม่ได้ตอนนี้"
 
 
+def _handle_pause() -> str:
+    """/pause — เงียบแจ้งเตือนอัตโนมัติทั้งหมด (สแกน/โซน/ข่าว/บรีฟ/รีวิว) · /scan /list ยังใช้ได้"""
+    try:
+        import runtime_flags
+        runtime_flags.set_paused(True, by="telegram")
+    except Exception as e:  # noqa: BLE001
+        log.warning("pause failed: %s", e)
+        return "⚠️ ตั้งค่าปิดแจ้งเตือนไม่สำเร็จ (เขียน state ไม่ได้) — ลองใหม่อีกครั้ง"
+    return ("🔕 ปิดแจ้งเตือนอัตโนมัติแล้ว\n"
+            "เงียบ: สแกน 07:00 · โซนเปลี่ยน · ข่าวด่วน · บรีฟเช้า · รีวิวสัปดาห์\n"
+            "ยังใช้ได้: /scan /list /ask /stats ฯลฯ (สั่งเองได้ปกติ)\n"
+            "เปิดกลับด้วย /resume · เช็กสถานะ /status")
+
+
+def _handle_resume() -> str:
+    """/resume — เปิดแจ้งเตือนอัตโนมัติกลับมา"""
+    try:
+        import runtime_flags
+        runtime_flags.set_paused(False, by="telegram")
+    except Exception as e:  # noqa: BLE001
+        log.warning("resume failed: %s", e)
+        return "⚠️ เปิดแจ้งเตือนไม่สำเร็จ (เขียน state ไม่ได้) — ลองใหม่อีกครั้ง"
+    return "🔔 เปิดแจ้งเตือนอัตโนมัติแล้ว — กลับมาแจ้งตามปกติ"
+
+
+def _handle_status() -> str:
+    """/status — เช็กว่าแจ้งเตือนอัตโนมัติเปิดหรือปิดอยู่"""
+    try:
+        import runtime_flags
+        st = runtime_flags.status()
+    except Exception as e:  # noqa: BLE001
+        log.warning("status failed: %s", e)
+        return "อ่านสถานะไม่ได้ตอนนี้"
+    if st.get("alerts_paused"):
+        when = st.get("updated_at", "")
+        return (f"🔕 แจ้งเตือนอัตโนมัติ: ปิดอยู่ (ตั้งเมื่อ {when} UTC)\n"
+                "/scan /list ยังสั่งเองได้ · /resume เพื่อเปิดกลับ")
+    return "🔔 แจ้งเตือนอัตโนมัติ: เปิดอยู่ (ปกติ)\n/pause เพื่อปิดชั่วคราว"
+
+
 def _handle_scan(args: list[str]) -> str:
     """
     /scan                     → ทั้ง 4 กลุ่ม (สั่ง job, ผลตามมา ~1-2 นาที)
@@ -1371,6 +1410,11 @@ _HELP = (
     "• /sectors — เงินไหลเข้าธีมไหน (sector rotation)\n"
     "• /thesis SYMBOL — ทบทวนเหตุผลถือหุ้น (เทคนิค+ข่าว)\n"
     "• /tune — AI วิเคราะห์ไม้ที่ปิด เสนอจุดปรับกลยุทธ์\n\n"
+    "เปิด-ปิดแจ้งเตือน:\n"
+    "• /pause (/off) — เงียบแจ้งเตือนอัตโนมัติทั้งหมด (สแกน/โซน/ข่าว/บรีฟ/รีวิว)\n"
+    "• /resume (/on) — เปิดแจ้งเตือนกลับมา\n"
+    "• /status — เช็กว่าแจ้งเตือนเปิดหรือปิดอยู่\n"
+    "   (ปิดอยู่ก็ยังสั่ง /scan /list /ask เองได้ปกติ)\n\n"
     "Symbol: SOL, AAPL, CPALL, XAUUSD (ทอง), XAGUSD (เงิน), XCUUSD (ทองแดง)\n"
     "ไม่ใส่ราคา = บอตใช้ราคาตลาดล่าสุดให้\n"
     "เปิดสถานะแล้วบอตแนะนำ SL/TP อัตโนมัติ (จาก ATR) + เตือนเมื่อราคาแตะ"
@@ -1421,6 +1465,12 @@ def _dispatch(text: str) -> str:
         return _handle_stats()
     if cmd == "calib":
         return _handle_calib()
+    if cmd in ("pause", "off", "mute"):
+        return _handle_pause()
+    if cmd in ("resume", "on", "unmute"):
+        return _handle_resume()
+    if cmd == "status":
+        return _handle_status()
     if cmd == "zone":
         return _ZONE
     if cmd == "macro":

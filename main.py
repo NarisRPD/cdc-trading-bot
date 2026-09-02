@@ -59,12 +59,22 @@ def _is_weekend_bkk() -> bool:
 
 
 def send_telegram(msg: str, **kwargs) -> bool:
-    """ห่อ sender จริง: ข้ามการส่งวันเสาร์-อาทิตย์ · วันธรรมดาส่งปกติ"""
+    """ห่อ sender จริง: ข้ามการส่งวันเสาร์-อาทิตย์ + โหมด /pause · วันธรรมดา/ไม่พัก ส่งปกติ"""
     if (os.getenv("ALERTS_SKIP_WEEKEND", "true").strip().lower() in ("1", "true", "yes", "on")
             and _is_weekend_bkk()):
         log.info("ข้ามแจ้งเตือน — เสาร์/อาทิตย์ (ALERTS_SKIP_WEEKEND) · %.50s",
                  (msg or "").replace("\n", " "))
         return True   # ถือว่าสำเร็จ — ตัวเรียกจะได้ไม่นับ fail/ไม่ retry
+    # โหมด /pause — เงียบแจ้งเตือนอัตโนมัติ · สแกนที่ผู้ใช้สั่งเอง (bot ตั้ง IGNORE_PAUSE) จะข้าม gate นี้
+    if os.getenv("IGNORE_PAUSE", "").strip().lower() not in ("1", "true", "yes", "on"):
+        try:
+            import runtime_flags
+            if runtime_flags.is_paused():
+                log.info("ข้ามแจ้งเตือน — บอทถูก /pause อยู่ · %.50s",
+                         (msg or "").replace("\n", " "))
+                return True
+        except Exception as e:  # noqa: BLE001 — อ่าน flag ไม่ได้ = ส่งตามปกติ (fail-open)
+            log.warning("เช็ก pause flag ไม่ได้ (ส่งตามปกติ): %s", e)
     # เติม credential ให้เองถ้าผู้เรียกลืมส่ง — sender จริงประกาศ token/chat_id เป็น keyword-only
     # ที่ไม่มีดีฟอลต์ ลืมทีเดียวได้ TypeError กลางทาง (เคยทำให้รายงาน premarket ตายเงียบทั้งฟีเจอร์)
     kwargs.setdefault("token", os.getenv("TELEGRAM_BOT_TOKEN", "").strip())
